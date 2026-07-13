@@ -34,3 +34,18 @@ All notable changes to this project are documented here. The format is based on
   median/CV stats, env fingerprint, JSON persistence with regression deltas.
 - Gating soak (`python -m benchmarks.soak`): paced load with periodic fault injection,
   asserting no-loss recovery and bounded RSS / FDs / tasks / pool connections.
+
+### Added — Phase 2 (Resilience)
+- Retry executor: idempotency-gated, deadline-aware, exponential + full jitter, wired into
+  every `fetch_*`/`execute` call. Non-idempotent writes and commit-unknown outcomes are never
+  retried.
+- Circuit breaker per db+shard+role (`CircuitBreakerConfig`, opt-in): only infrastructure
+  failures (connection/pool/availability/timeout) trip it; integrity/programming errors do not.
+- Concurrency limiter: per-database/reads/writes/bulk semaphores acquired before pool checkout.
+- New chaos scenarios: serialization failure retried to success, circuit opens under sustained
+  connection failure.
+
+### Changed
+- Performance: the async path no longer issues a per-operation `SET statement_timeout` round
+  trip (client-side `asyncio.timeout` bounds the statement); small-read overhead vs raw
+  SQLAlchemy Core dropped from ~31% to ~6%. The sync path keeps the server-side timeout.

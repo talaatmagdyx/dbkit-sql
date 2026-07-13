@@ -18,11 +18,20 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
 - Structured logging + metrics protocol (Prometheus adapter).
 - Sync + async facades from one source (unasync generation).
 
-## Phase 2 — Resilience
+## Phase 2 — Resilience ✅ (delivered)
 
-Full SQLSTATE table + retryability map; retry executor (idempotency-gated, deadline-aware,
-exponential + full jitter); circuit breaker (per db+shard+role); concurrency tiers;
-long-transaction detection.
+- SQLSTATE classification with a retryability map.
+- Retry executor (`_async/resilience.py`): idempotency-gated, deadline-aware, exponential +
+  full jitter; the decision logic is the pure, property-tested `_core.policies`.
+- Circuit breaker (`_core/circuit.py`): per db+shard+role, only infrastructure failures trip
+  it; opt-in via `circuit_breaker.enabled`.
+- Concurrency tiers (`ConcurrencyLimiter`): per-database/reads/writes/bulk semaphores acquired
+  before pool checkout.
+- Perf: dropped the redundant per-op `SET statement_timeout` round trip on the async path
+  (client-side `asyncio.timeout` covers it), cutting small-read overhead from ~31% to ~6% over
+  raw SQLAlchemy Core.
+
+Remaining for a later pass: long-transaction detection surfaced as a metric/warning.
 
 ## Phase 3 — High throughput
 

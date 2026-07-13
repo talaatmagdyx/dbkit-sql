@@ -11,11 +11,12 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from .._core.circuit import CircuitBreaker
 from .._core.config import DbkitConfig
 from .._core.errors import (
     DatabaseError,
@@ -35,6 +36,7 @@ from ._compat import API_LABEL
 from .connection import AsyncConnectionScope, run_execute
 from .engine import AsyncEngineRegistry, EngineEntry
 from .health import HealthReport, TargetHealth, ping
+from .resilience import ConcurrencyLimiter, run_with_retries
 from .transaction import _AsyncTransactionManager
 
 
@@ -57,6 +59,8 @@ class AsyncDatabase:
         self._metrics = metrics
         self._registry = AsyncEngineRegistry(config, metrics=self._metrics)
         self._shards = SingleShardResolver()
+        self._breakers: dict[str, CircuitBreaker] = {}
+        self._limiters: dict[str, ConcurrencyLimiter] = {}
         self._started = False
 
     # -- construction ------------------------------------------------------------- #
@@ -153,6 +157,83 @@ class AsyncDatabase:
             return query.name, query.operation, query
         return "adhoc", "read", None
 
+    # -- resilience --------------------------------------------------------------- #
+
+    def _breaker_for(self, entry: EngineEntry) -> CircuitBreaker | None:
+        """One circuit breaker per db+shard+role, created lazily if enabled (§16)."""
+        cb = self._config.defaults.circuit_breaker
+        if not cb.enabled:
+            return None
+        key = str(entry.key)
+        breaker = self._breakers.get(key)
+        if breaker is None:
+            breaker = CircuitBreaker(
+                failure_threshold=cb.failure_threshold,
+                window_seconds=cb.window_seconds,
+                open_seconds=cb.open_seconds,
+                half_open_max_calls=cb.half_open_max_calls,
+            )
+            self._breakers[key] = breaker
+        return breaker
+
+    def _limiter_for(self, database: str) -> ConcurrencyLimiter:
+        """One concurrency limiter per named database, from its concurrency config (§17)."""
+        limiter = self._limiters.get(database)
+        if limiter is None:
+            cc = self._config.databases[database].concurrency
+            limiter = ConcurrencyLimiter(
+                {
+                    "database": cc.database,
+                    "reads": cc.reads,
+                    "writes": cc.writes,
+                    "bulk": cc.bulk_writes,
+                }
+            )
+            self._limiters[database] = limiter
+        return limiter
+
+    async def _execute_with_resilience(
+        self,
+        target: DatabaseTarget,
+        query: object,
+        op: Callable[[AsyncConnectionScope], Awaitable[Any]],
+        *,
+        commit: bool,
+        timeout: float | None,
+        deadline: float | None,
+    ) -> Any:
+        """Run ``op`` under concurrency limiting, circuit breaking, and retries (§14, §16, §17).
+
+        Concurrency is acquired *inside* each attempt (before pool checkout) so queueing
+        happens in cheap waiters and a retry backoff does not hold a slot.
+        """
+        entry, _route = await self._entry(target)
+        query_name, operation, q = self._query_meta(query)
+        labels = self._labels(entry, query_name, operation)
+        breaker = self._breaker_for(entry)
+        limiter = self._limiter_for(entry.key.database)
+        tier = "writes" if (q and q.is_write) else "reads"
+
+        async def attempt() -> Any:
+            async with (
+                limiter.acquire("database"),
+                limiter.acquire(tier),
+                self._scope(
+                    target, query, call_timeout=timeout, deadline=deadline, commit=commit
+                ) as scope,
+            ):
+                return await op(scope)
+
+        return await run_with_retries(
+            attempt,
+            query=q,
+            retry=self._config.defaults.retry,
+            breaker=breaker,
+            metrics=self._metrics,
+            labels=labels,
+            deadline=deadline,
+        )
+
     # -- acquisition -------------------------------------------------------------- #
 
     @contextlib.asynccontextmanager
@@ -244,10 +325,15 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> list[Any]:
-        async with self._scope(
-            target, query, call_timeout=timeout, deadline=deadline, commit=False
-        ) as scope:
-            return await scope.fetch_all(query, params, map_to=map_to)
+        rows: list[Any] = await self._execute_with_resilience(
+            target,
+            query,
+            lambda scope: scope.fetch_all(query, params, map_to=map_to),
+            commit=False,
+            timeout=timeout,
+            deadline=deadline,
+        )
+        return rows
 
     async def fetch_one(
         self,
@@ -259,10 +345,14 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> Any:
-        async with self._scope(
-            target, query, call_timeout=timeout, deadline=deadline, commit=False
-        ) as scope:
-            return await scope.fetch_one(query, params, map_to=map_to)
+        return await self._execute_with_resilience(
+            target,
+            query,
+            lambda scope: scope.fetch_one(query, params, map_to=map_to),
+            commit=False,
+            timeout=timeout,
+            deadline=deadline,
+        )
 
     async def fetch_optional(
         self,
@@ -274,10 +364,14 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> Any | None:
-        async with self._scope(
-            target, query, call_timeout=timeout, deadline=deadline, commit=False
-        ) as scope:
-            return await scope.fetch_optional(query, params, map_to=map_to)
+        return await self._execute_with_resilience(
+            target,
+            query,
+            lambda scope: scope.fetch_optional(query, params, map_to=map_to),
+            commit=False,
+            timeout=timeout,
+            deadline=deadline,
+        )
 
     async def fetch_value(
         self,
@@ -288,10 +382,14 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> Any:
-        async with self._scope(
-            target, query, call_timeout=timeout, deadline=deadline, commit=False
-        ) as scope:
-            return await scope.fetch_value(query, params)
+        return await self._execute_with_resilience(
+            target,
+            query,
+            lambda scope: scope.fetch_value(query, params),
+            commit=False,
+            timeout=timeout,
+            deadline=deadline,
+        )
 
     async def fetch_values(
         self,
@@ -302,10 +400,15 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> list[Any]:
-        async with self._scope(
-            target, query, call_timeout=timeout, deadline=deadline, commit=False
-        ) as scope:
-            return await scope.fetch_values(query, params)
+        values: list[Any] = await self._execute_with_resilience(
+            target,
+            query,
+            lambda scope: scope.fetch_values(query, params),
+            commit=False,
+            timeout=timeout,
+            deadline=deadline,
+        )
+        return values
 
     # -- write API ---------------------------------------------------------------- #
 
@@ -320,10 +423,14 @@ class AsyncDatabase:
     ) -> ExecutionResult:
         query_name, _, _ = self._query_meta(query)
         start = time.monotonic()
-        async with self._scope(
-            target, query, call_timeout=timeout, deadline=deadline, commit=True
-        ) as scope:
-            row_count = await scope.execute(query, params)
+        row_count = await self._execute_with_resilience(
+            target,
+            query,
+            lambda scope: scope.execute(query, params),
+            commit=True,
+            timeout=timeout,
+            deadline=deadline,
+        )
         return ExecutionResult(
             row_count=row_count,
             query_name=query_name,

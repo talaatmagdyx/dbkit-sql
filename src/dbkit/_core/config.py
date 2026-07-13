@@ -118,6 +118,21 @@ class ConcurrencyConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class CircuitBreakerConfig:
+    """Per db+shard+role circuit breaker settings (§16)."""
+
+    enabled: bool = False
+    failure_threshold: int = 10
+    window_seconds: float = 30.0
+    open_seconds: float = 10.0
+    half_open_max_calls: int = 2
+
+    def validate(self) -> None:
+        if self.failure_threshold < 1:
+            raise DatabaseConfigurationError("circuit_breaker.failure_threshold must be >= 1")
+
+
+@dataclass(frozen=True, slots=True)
 class ObservabilityConfig:
     metrics: bool = True
     tracing: bool = False
@@ -140,11 +155,13 @@ class Defaults:
     transaction_timeout_seconds: float = 5.0
     pool: PoolConfig = field(default_factory=PoolConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
+    circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
     def validate(self) -> None:
         self.pool.validate()
         self.retry.validate()
+        self.circuit_breaker.validate()
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,6 +353,18 @@ def _retry(data: Mapping[str, Any] | None) -> RetryConfig:
     )
 
 
+def _circuit_breaker(data: Mapping[str, Any] | None) -> CircuitBreakerConfig:
+    if data is None:
+        return CircuitBreakerConfig()
+    return CircuitBreakerConfig(
+        enabled=bool(data.get("enabled", False)),
+        failure_threshold=int(data.get("failure_threshold", 10)),
+        window_seconds=float(data.get("window_seconds", 30.0)),
+        open_seconds=float(data.get("open_seconds", 10.0)),
+        half_open_max_calls=int(data.get("half_open_max_calls", 2)),
+    )
+
+
 def _observability(data: Mapping[str, Any] | None) -> ObservabilityConfig:
     if data is None:
         return ObservabilityConfig()
@@ -378,6 +407,7 @@ def _defaults(data: Mapping[str, Any] | None) -> Defaults:
         transaction_timeout_seconds=float(data.get("transaction_timeout_seconds", 5.0)),
         pool=_pool(data.get("pool")) or PoolConfig(),
         retry=_retry(data.get("retry")),
+        circuit_breaker=_circuit_breaker(data.get("circuit_breaker")),
         observability=_observability(data.get("observability")),
     )
 

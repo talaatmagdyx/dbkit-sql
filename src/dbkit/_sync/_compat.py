@@ -9,6 +9,7 @@ sync world, so the cancellation helpers are inert.
 from __future__ import annotations
 
 import contextlib
+import time
 from typing import Any, Iterator
 
 IS_ASYNC = False
@@ -20,6 +21,11 @@ API_LABEL = "sync"
 def sync_engine_of(engine: Any) -> Any:
     """A sync ``Engine`` already owns its pool and fires pool events directly."""
     return engine
+
+
+def sleep(seconds: float) -> None:
+    """Frontend-appropriate sleep (async ``asyncio.sleep``; sync ``time.sleep``)."""
+    time.sleep(seconds)
 
 
 def timeout_scope(seconds: float | None) -> contextlib.AbstractContextManager[None]:

@@ -54,6 +54,8 @@ TOKENS: dict[str, str] = {
     # SQLAlchemy async types
     "AsyncConnection": "Connection",
     "AsyncEngine": "Engine",
+    # contextlib async forms
+    "AbstractAsyncContextManager": "AbstractContextManager",
     # concurrency primitives
     "asyncio.BoundedSemaphore": "threading.BoundedSemaphore",
     "asyncio.Semaphore": "threading.Semaphore",

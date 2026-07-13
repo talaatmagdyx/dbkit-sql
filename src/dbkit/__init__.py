@@ -11,6 +11,7 @@ from __future__ import annotations
 from . import errors
 from ._async.database import AsyncDatabase
 from ._core.config import (
+    CircuitBreakerConfig,
     ConcurrencyConfig,
     ConnectionBudgetConfig,
     DatabaseConfig,
@@ -30,6 +31,7 @@ __version__ = "0.1.0.dev0"
 
 __all__ = [
     "AsyncDatabase",
+    "CircuitBreakerConfig",
     "ConcurrencyConfig",
     "ConnectionBudgetConfig",
     "Database",

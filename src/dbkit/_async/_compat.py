@@ -27,6 +27,11 @@ def sync_engine_of(engine: Any) -> Any:
     return engine.sync_engine
 
 
+async def sleep(seconds: float) -> None:
+    """Frontend-appropriate sleep (async ``asyncio.sleep``; sync ``time.sleep``)."""
+    await asyncio.sleep(seconds)
+
+
 def timeout_scope(seconds: float | None) -> contextlib.AbstractAsyncContextManager[Any]:
     """A client-side deadline. Async uses :func:`asyncio.timeout`; the sync build has no
     client-side timeout and relies on the server ``statement_timeout`` instead (§12.1)."""

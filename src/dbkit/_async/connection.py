@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from .._core import result as result_mod
 from .._core.errors import classify
 from .._core.query import Query, Statement, coerce_statement
-from ._compat import timeout_scope
+from ._compat import IS_ASYNC, timeout_scope
 
 
 def apply_statement_timeout_sql(seconds: float | None) -> str | None:
@@ -34,7 +34,11 @@ def apply_statement_timeout_sql(seconds: float | None) -> str | None:
 async def _maybe_set_timeout(
     conn: AsyncConnection, seconds: float | None, *, is_postgres: bool
 ) -> None:
-    if not is_postgres:
+    # The async frontend bounds a single statement with a real client-side deadline
+    # (``asyncio.timeout``), which cancels the driver — so the extra server-side
+    # ``SET statement_timeout`` round trip is pure overhead and is skipped. The sync frontend
+    # has no client-side timeout primitive, so it relies on the server-side setting (§12.1).
+    if IS_ASYNC or not is_postgres:
         return
     stmt = apply_statement_timeout_sql(seconds)
     if stmt is not None:

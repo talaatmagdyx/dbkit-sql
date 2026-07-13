@@ -210,6 +210,99 @@ async def test_commit_unknown_when_backend_dies_during_commit(base_config: dict)
         await admin.close()
 
 
+# --- retry / circuit-breaker scenarios (Phase 2) ------------------------------------ #
+
+
+async def test_serialization_failure_is_retried_and_succeeds(base_config: dict) -> None:
+    """A transient serialization failure (SQLSTATE 40001) on an idempotent read is retried
+    transparently and eventually succeeds (§14)."""
+    cfg = {
+        **base_config,
+        "defaults": {
+            **base_config["defaults"],
+            "retry": {"attempts": 5, "initial_delay_ms": 5, "retry_reads": True},
+        },
+    }
+    db = AsyncDatabase.from_config(cfg)
+    await db.start()
+    try:
+        # A read that raises 40001 on its first two executions, then succeeds. A SEQUENCE is
+        # used as the counter because ``nextval`` is NOT rolled back — so it survives the
+        # rollback that each failed attempt performs (a table counter would reset every time).
+        await db.execute(sql("DROP SEQUENCE IF EXISTS dbkit_flaky_seq"), target=TARGET)
+        await db.execute(sql("CREATE SEQUENCE dbkit_flaky_seq"), target=TARGET)
+        await db.execute(
+            sql(
+                """
+                CREATE OR REPLACE FUNCTION dbkit_flaky_read() RETURNS int
+                LANGUAGE plpgsql AS $$
+                DECLARE cur int;
+                BEGIN
+                    cur := nextval('dbkit_flaky_seq');
+                    IF cur < 3 THEN
+                        RAISE EXCEPTION 'transient' USING ERRCODE = '40001';
+                    END IF;
+                    RETURN cur;
+                END;
+                $$;
+                """
+            ),
+            target=TARGET,
+        )
+        flaky = Query(
+            name="chaos.flaky_read",
+            statement=sql("SELECT dbkit_flaky_read()"),
+            operation="read",
+            idempotent=True,
+        )
+        value = await db.fetch_value(flaky, target=TARGET)
+        assert value == 3  # succeeded on the third attempt
+    finally:
+        await db.close()
+
+
+async def test_circuit_opens_under_sustained_failure(base_config: dict) -> None:
+    """After enough infrastructure failures the breaker opens and fails fast with
+    DatabaseCircuitOpenError instead of hammering a downed backend (§16)."""
+    from dbkit.errors import DatabaseCircuitOpenError, DatabaseConnectionError
+
+    # point at a dead port so every connect fails with a connection error
+    dead_dsn = "postgresql+psycopg://nobody@127.0.0.1:1/none"
+    cfg = {
+        "databases": {"app": {"primary": {"url": dead_dsn}}},
+        "defaults": {
+            "query_timeout_seconds": 2.0,
+            "pool": {"connect_timeout_seconds": 1, "pre_ping": True},
+            "retry": {"attempts": 1, "retry_reads": True},
+            "circuit_breaker": {
+                "enabled": True,
+                "failure_threshold": 3,
+                "window_seconds": 30,
+                "open_seconds": 30,
+            },
+            "observability": {"metrics": False},
+        },
+    }
+    db = AsyncDatabase.from_config(cfg)
+    # do not require_ready (it would fail); just drive operations
+    db._started = True  # skip engine warmup
+    try:
+        conn_failures = 0
+        circuit_open = False
+        for _ in range(8):
+            try:
+                await db.fetch_value(sql("SELECT 1"), target=TARGET)
+            except DatabaseCircuitOpenError:
+                circuit_open = True
+                break
+            except DatabaseConnectionError:
+                conn_failures += 1
+        assert conn_failures >= 3, "expected several connection failures before opening"
+        assert circuit_open, "breaker should have opened and fast-failed"
+    finally:
+        await db.close()
+
+
 # --- container-restart scenario (requires Docker) ----------------------------------- #
 
 
