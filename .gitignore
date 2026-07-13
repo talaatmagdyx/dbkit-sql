@@ -11,3 +11,5 @@ build/
 .venv/
 uv.lock
 .DS_Store
+.hypothesis/
+benchmarks/results/

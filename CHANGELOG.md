@@ -19,3 +19,18 @@ All notable changes to this project are documented here. The format is based on
 - Explicit transactions with savepoints, commit-unknown detection, and cancellation cleanup.
 - Health checks (liveness/readiness), graceful startup/shutdown.
 - Structured logging and a metrics protocol (Prometheus adapter behind an extra).
+
+### Added — Quality infrastructure
+- Resilience / chaos suite (`tests/integration/test_resilience_scenarios.py`): backend
+  termination mid-transaction, commit-unknown race, cancellation storm, bounded connections
+  under concurrency, graceful shutdown under load, and full server restart recovery
+  (Docker-gated). Faults induced with `pg_terminate_backend` and `docker restart`.
+- Property-based tests (hypothesis): redaction never leaks, SQLSTATE classification totality,
+  timeout-resolution lower-bound, backoff bounds/monotonicity, connection-budget identity.
+- Security tests: bare-string SQL rejection, DSN/parameter redaction, secret-free errors and
+  logs, and (integration) SQL-injection payloads stored literally via bound parameters.
+- Benchmark suite (`python -m benchmarks`): overhead A/B vs raw psycopg and raw SQLAlchemy
+  Core, throughput (sync + async), paced latency P50/P95/P99, and batch vs per-row inserts —
+  median/CV stats, env fingerprint, JSON persistence with regression deltas.
+- Gating soak (`python -m benchmarks.soak`): paced load with periodic fault injection,
+  asserting no-loss recovery and bounded RSS / FDs / tasks / pool connections.

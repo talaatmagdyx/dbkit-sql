@@ -36,12 +36,15 @@ otel = ["opentelemetry-api>=1.25"]
 pydantic = ["pydantic>=2.7"]
 orjson = ["orjson>=3.10"]
 cli = ["typer>=0.12"]
+bench = ["psutil>=5.9"]
 dev = [
-    "dbkit[psycopg,yaml,prometheus,pydantic]",
+    "dbkit[psycopg,yaml,prometheus,pydantic,bench]",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    "hypothesis>=6.100",
     "testcontainers[postgres]>=4.5",
+    "docker>=7.0",
     "ruff>=0.5",
     "mypy>=1.10",
 ]
@@ -77,6 +80,8 @@ ignore = [
 # Generated sync code mirrors async structure; don't fight it.
 "src/dbkit/_sync/*" = ["F401", "B", "SIM", "UP", "RUF", "I001", "E501", "E402"]
 "tests/*" = ["B", "SIM"]
+# Benchmarks are standalone dev scripts, not shipped library code.
+"benchmarks/*" = ["B", "SIM", "E501", "T201", "PERF"]
 
 [tool.mypy]
 python_version = "3.11"
