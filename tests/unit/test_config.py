@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import pytest
+
+from dbkit import DbkitConfig
+from dbkit.errors import DatabaseConfigurationError
+
+BASE = {
+    "environment": "test",
+    "databases": {
+        "app": {
+            "primary": {"url": "postgresql+psycopg://u:secret@h:5432/app"},
+            "replicas": [{"name": "r1", "url": "postgresql+psycopg://u:secret@r:5432/app"}],
+        }
+    },
+}
+
+
+def test_from_dict_builds_targets() -> None:
+    cfg = DbkitConfig.from_dict(BASE)
+    assert cfg.environment == "test"
+    app = cfg.databases["app"]
+    assert app.primary.driver == "psycopg"
+    assert app.primary.dialect == "postgresql"
+    assert len(app.replicas) == 1
+    assert app.replicas[0].name == "r1"
+
+
+def test_connection_budget_math() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "defaults": {"pool": {"size": 10, "max_overflow": 5}},
+            "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+        }
+    )
+    # one target * (10 + 5)
+    assert cfg.max_connections_per_process() == 15
+    report = cfg.connection_budget_report(replicas=4)
+    assert report == {"per_process": 15, "app_replicas": 4, "cluster_total": 60}
+
+
+def test_connection_budget_enforced_at_startup() -> None:
+    data = {
+        "defaults": {"pool": {"size": 50, "max_overflow": 0}},
+        "connection_budget": {"maximum_per_process": 20, "enforce_at_startup": True},
+        "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+    }
+    with pytest.raises(DatabaseConfigurationError, match="connection budget exceeded"):
+        DbkitConfig.from_dict(data)
+
+
+def test_budget_not_enforced_when_disabled() -> None:
+    data = {
+        "defaults": {"pool": {"size": 50, "max_overflow": 0}},
+        "connection_budget": {"maximum_per_process": 20, "enforce_at_startup": False},
+        "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+    }
+    cfg = DbkitConfig.from_dict(data)  # does not raise
+    assert cfg.max_connections_per_process() == 50
+
+
+def test_env_expansion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_URL", "postgresql+psycopg://h/app")
+    cfg = DbkitConfig.from_dict({"databases": {"app": {"primary": {"url": "${APP_URL}"}}}})
+    assert cfg.databases["app"].primary.url == "postgresql+psycopg://h/app"
+
+
+def test_env_expansion_default() -> None:
+    cfg = DbkitConfig.from_dict(
+        {"databases": {"app": {"primary": {"url": "${MISSING:-postgresql+psycopg://h/app}"}}}}
+    )
+    assert cfg.databases["app"].primary.url == "postgresql+psycopg://h/app"
+
+
+def test_env_expansion_missing_raises() -> None:
+    with pytest.raises(DatabaseConfigurationError, match="not set"):
+        DbkitConfig.from_dict({"databases": {"app": {"primary": {"url": "${DEFINITELY_MISSING}"}}}})
+
+
+def test_redacted_hides_passwords() -> None:
+    cfg = DbkitConfig.from_dict(BASE)
+    red = cfg.redacted()
+    assert "secret" not in red.databases["app"].primary.url
+    assert "***" in red.databases["app"].primary.url
+    assert "secret" not in red.databases["app"].replicas[0].url
+    # original is untouched
+    assert "secret" in cfg.databases["app"].primary.url
+
+
+def test_missing_databases_rejected() -> None:
+    with pytest.raises(DatabaseConfigurationError):
+        DbkitConfig.from_dict({"databases": {}})
+
+
+def test_missing_primary_rejected() -> None:
+    with pytest.raises(DatabaseConfigurationError, match="primary"):
+        DbkitConfig.from_dict({"databases": {"app": {}}})
+
+
+def test_from_yaml(tmp_path) -> None:
+    import textwrap
+
+    p = tmp_path / "cfg.yaml"
+    p.write_text(
+        textwrap.dedent(
+            """
+            dbkit:
+              environment: prod
+              databases:
+                app:
+                  primary:
+                    url: postgresql+psycopg://h/app
+            """
+        )
+    )
+    cfg = DbkitConfig.from_yaml(str(p))
+    assert cfg.environment == "prod"

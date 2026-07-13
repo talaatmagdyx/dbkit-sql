@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+      - name: unasync drift check
+        run: uv run python tools/run_unasync.py --check
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy
+
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install ${{ matrix.python }}
+      - run: uv sync --extra dev
+      - run: uv run pytest -q -m "not integration" --cov=dbkit --cov-report=term-missing
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dbkit
+          POSTGRES_PASSWORD: dbkit
+          POSTGRES_DB: dbkit
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dbkit"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    env:
+      DBKIT_TEST_DSN: postgresql+psycopg://dbkit:dbkit@localhost:5432/dbkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+      - run: uv run pytest -q -m integration

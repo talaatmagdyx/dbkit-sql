@@ -1,0 +1,103 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dbkit"
+version = "0.1.0.dev0"
+description = "A thin, high-throughput SQL toolkit over SQLAlchemy Core — sync and async, ORM-free."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "dbkit contributors" }]
+keywords = ["sqlalchemy", "async", "postgresql", "database", "connection-pool", "sql"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
+dependencies = [
+    "sqlalchemy[asyncio]>=2.0.30",
+]
+
+[project.optional-dependencies]
+# Default first-class driver (psycopg 3 provides BOTH sync and async).
+psycopg = ["psycopg[binary]>=3.2"]
+asyncpg = ["asyncpg>=0.29"]
+yaml = ["pyyaml>=6.0"]
+prometheus = ["prometheus-client>=0.20"]
+otel = ["opentelemetry-api>=1.25"]
+pydantic = ["pydantic>=2.7"]
+orjson = ["orjson>=3.10"]
+cli = ["typer>=0.12"]
+dev = [
+    "dbkit[psycopg,yaml,prometheus,pydantic]",
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "testcontainers[postgres]>=4.5",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/dbkit/dbkit"
+Source = "https://github.com/dbkit/dbkit"
+Issues = "https://github.com/dbkit/dbkit/issues"
+
+[project.scripts]
+dbkit = "dbkit.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dbkit"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.format]
+# Generated sync code is emitted by tools/run_unasync.py; formatting it would cause the
+# drift check to fail. Its structure mirrors the (formatted) async source.
+exclude = ["src/dbkit/_sync/**"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = [
+    "SIM105",  # contextlib.suppress not always clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Generated sync code mirrors async structure; don't fight it.
+"src/dbkit/_sync/*" = ["F401", "B", "SIM", "UP", "RUF", "I001", "E501", "E402"]
+"tests/*" = ["B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+files = ["src/dbkit"]
+# Generated code is verified by regeneration + drift check, not re-typed line by line.
+exclude = "src/dbkit/_sync/.*"
+
+[[tool.mypy.overrides]]
+module = ["asyncpg.*", "testcontainers.*", "prometheus_client.*", "yaml.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: requires a real PostgreSQL (set DBKIT_TEST_DSN or use testcontainers)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["dbkit"]
+omit = ["src/dbkit/_sync/*"]
