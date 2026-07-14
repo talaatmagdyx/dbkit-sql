@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="dbkit logo">
+  <defs>
+    <linearGradient id="dbkitBody" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6f7bf0"/>
+      <stop offset="100%" stop-color="#2c3a8c"/>
+    </linearGradient>
+    <linearGradient id="dbkitCap" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#8890f5"/>
+      <stop offset="100%" stop-color="#4a58c9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- database cylinder: pool/kit at the core -->
+  <path d="M11 12 v20 a13 5 0 0 0 26 0 v-20 z" fill="url(#dbkitBody)"/>
+  <ellipse cx="24" cy="12" rx="13" ry="5" fill="url(#dbkitCap)"/>
+  <g stroke="#ffffff" stroke-width="1.4" fill="none" opacity="0.85" stroke-linecap="round">
+    <path d="M11 20 a13 5 0 0 0 26 0"/>
+    <path d="M11 26 a13 5 0 0 0 26 0"/>
+  </g>
+
+  <!-- pooled/sharded connection nodes -->
+  <g stroke="#f5a623" stroke-width="1.4" opacity="0.85" stroke-linecap="round">
+    <line x1="37.5" y1="10.5" x2="30" y2="14"/>
+    <line x1="9.5" y1="33.5" x2="16.5" y2="29"/>
+    <line x1="38" y1="37.5" x2="30" y2="32"/>
+  </g>
+  <g fill="#f5a623">
+    <circle cx="41" cy="9" r="3"/>
+    <circle cx="6" cy="35" r="3"/>
+    <circle cx="41" cy="39" r="3"/>
+  </g>
+</svg>
