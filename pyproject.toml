@@ -56,9 +56,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/talaatmagdyx/dbkit"
-Source = "https://github.com/talaatmagdyx/dbkit"
-Issues = "https://github.com/talaatmagdyx/dbkit/issues"
+Homepage = "https://github.com/talaatmagdyx/dbkit-sql"
+Source = "https://github.com/talaatmagdyx/dbkit-sql"
+Issues = "https://github.com/talaatmagdyx/dbkit-sql/issues"
 
 [project.scripts]
 dbkit = "dbkit.cli.main:main"

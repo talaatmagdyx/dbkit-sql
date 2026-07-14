@@ -1,8 +1,8 @@
 site_name: dbkit
 site_description: A thin, high-throughput SQL toolkit over SQLAlchemy Core — sync and async.
-site_url: https://talaatmagdyx.github.io/dbkit/
-repo_url: https://github.com/talaatmagdyx/dbkit
-repo_name: talaatmagdyx/dbkit
+site_url: https://talaatmagdyx.github.io/dbkit-sql/
+repo_url: https://github.com/talaatmagdyx/dbkit-sql
+repo_name: talaatmagdyx/dbkit-sql
 edit_uri: edit/main/docs/
 
 docs_dir: docs
