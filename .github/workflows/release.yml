@@ -30,7 +30,7 @@ jobs:
         run: uv run python -m build
       - name: verify package metadata
         run: uv run twine check dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/

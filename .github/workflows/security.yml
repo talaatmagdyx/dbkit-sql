@@ -43,7 +43,7 @@ jobs:
           uv run python -m pip_audit --skip-editable
       - name: Generate SBOM (CycloneDX)
         run: uv run python -m pip_audit --skip-editable --format=cyclonedx-json --output=sbom.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: sbom.json
