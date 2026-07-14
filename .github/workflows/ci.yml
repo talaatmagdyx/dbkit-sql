@@ -97,3 +97,20 @@ jobs:
       - run: uv sync --extra dev
       - name: async-only integration + chaos/resilience suite
         run: uv run pytest -q -m integration --ignore=tests/integration/test_sync_integration.py
+
+  all-checks:
+    # A single required status for branch protection, instead of listing every job above
+    # individually (which breaks whenever a job is renamed/added/removed).
+    name: All checks passed
+    runs-on: ubuntu-latest
+    needs: [static, unit, integration, integration-asyncpg]
+    if: always()
+    steps:
+      - name: Fail if any required job did not succeed
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" || \
+                "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "One or more required jobs failed or were cancelled."
+            exit 1
+          fi
+          echo "All required jobs passed."

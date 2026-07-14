@@ -1,4 +1,14 @@
-# dbkit
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="dbkit logo" width="88" height="88">
+</p>
+
+<h1 align="center">dbkit</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0">
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Status: alpha">
+</p>
 
 A thin, high-throughput SQL toolkit built **on top of SQLAlchemy Core** — for APIs,
 message consumers, background workers, and CLIs.
