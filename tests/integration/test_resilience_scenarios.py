@@ -575,7 +575,8 @@ async def test_recovers_after_full_database_restart() -> None:
             assert await db.fetch_value(sql("SELECT 1"), target=TARGET) == 1
 
             # restart the server (atomic stop+start), then poll for readiness via dbkit
-            pg.get_wrapped_container().restart()
+            container = pg.get_wrapped_container()
+            container.restart()
 
             deadline = time.monotonic() + 60
             recovered = False
@@ -588,7 +589,21 @@ async def test_recovers_after_full_database_restart() -> None:
                 except DatabaseError as exc:  # pre-ping/connect errors during boot are expected
                     last_err = exc
                     await asyncio.sleep(1.0)
-            assert recovered, f"did not recover after restart; last error: {last_err}"
+            if not recovered:
+                # Diagnose *why* on failure instead of leaving only a client-side connection
+                # error: was the container itself never running again (a Docker/environment
+                # issue distinct from dbkit), or did Postgres inside it fail to come back up
+                # (visible in its own logs, e.g. a stale postmaster.pid or crash-recovery loop)?
+                container.reload()
+                logs_tail = container.logs(tail=60)
+                logs_text = (logs_tail[1] if isinstance(logs_tail, tuple) else logs_tail).decode(
+                    errors="replace"
+                )
+                pytest.fail(
+                    f"did not recover after restart; last error: {last_err}\n"
+                    f"container status: {container.status}\n"
+                    f"--- last 60 lines of container logs ---\n{logs_text}"
+                )
         finally:
             await db.close()
 
