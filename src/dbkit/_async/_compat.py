@@ -65,6 +65,23 @@ def timeout_scope(seconds: float | None) -> contextlib.AbstractAsyncContextManag
     return asyncio.timeout(seconds)
 
 
+async def semaphore_acquire(sem: asyncio.Semaphore, timeout: float | None) -> bool:
+    """Acquire ``sem``, returning False (never raising) if ``timeout`` elapses first.
+
+    ``asyncio.Semaphore.acquire()`` has no built-in timeout, unlike ``threading.Semaphore``
+    (§17); this wraps it in :func:`asyncio.wait_for` so both frontends expose the same
+    bounded-wait contract to :class:`ConcurrencyLimiter`.
+    """
+    if timeout is None:
+        await sem.acquire()
+        return True
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=timeout)
+    except TimeoutError:
+        return False
+    return True
+
+
 def is_cancellation(exc: BaseException) -> bool:
     """True if ``exc`` is a cooperative cancellation that must be re-raised, not swallowed."""
     return isinstance(exc, asyncio.CancelledError)

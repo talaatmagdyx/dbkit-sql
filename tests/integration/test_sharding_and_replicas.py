@@ -10,8 +10,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 import pytest
+from sqlalchemy import text
 
-from dbkit import AsyncDatabase, DatabaseTarget, HashShardResolver, sql
+from dbkit import AsyncDatabase, DatabaseTarget, DbkitConfig, HashShardResolver, sql
+from dbkit._async.engine import AsyncEngineRegistry
+from dbkit._core.routing import ResolvedRoute
 
 pytestmark = pytest.mark.integration
 
@@ -101,6 +104,36 @@ async def test_consistency_scope_is_task_local(db_with_replica: AsyncDatabase) -
 
     other_role, _ = await asyncio.gather(read_outside_scope(), with_scope())
     assert other_role == "replica"  # unaffected by the concurrent task's scope
+
+
+async def test_evicted_engines_dont_corrupt_a_connection_already_checked_out(
+    base_config: dict,
+) -> None:
+    """``evict_lru`` is built for unbounded-tenant deployments, where a request for a new
+    tenant can evict another tenant's engine while a request for *that* tenant is mid-flight.
+    A checked-out connection must keep working until the caller is done with it — SQLAlchemy's
+    ``Engine.dispose()`` only closes idle pooled connections, never ones already checked out."""
+    dsn = base_config["databases"]["app"]["primary"]["url"]
+    cfg = DbkitConfig.from_dict(
+        {"databases": {"a": {"primary": {"url": dsn}}, "b": {"primary": {"url": dsn}}}}
+    )
+    registry = AsyncEngineRegistry(cfg, max_engines=1, evict_lru=True)
+    route_a = ResolvedRoute(database="a", shard_id="default", role="primary")
+    route_b = ResolvedRoute(database="b", shard_id="default", role="primary")
+
+    entry_a = await registry.get(route_a)
+    held_conn = await entry_a.engine.connect()
+    try:
+        # Exceeds max_engines=1 -> evicts (disposes) 'a', the only other live engine.
+        await registry.get(route_b)
+        assert registry.count == 1
+
+        # The connection checked out before eviction must still complete its work cleanly.
+        result = await held_conn.execute(text("SELECT 1"))
+        assert result.scalar() == 1
+    finally:
+        await held_conn.close()  # must not raise even though its engine was disposed
+    await registry.dispose_all()
 
 
 async def test_hash_shard_resolver_routes_deterministically(base_config: dict) -> None:

@@ -32,7 +32,7 @@ from .base import (
     DatabaseUnsupportedOperationError,
     ErrorCategory,
 )
-from .classifier import classify
+from .classifier import classify, is_connection_error
 from .redaction import redact_dsn, redact_params, sanitize_message
 from .sqlstate import error_class_for_sqlstate
 
@@ -67,6 +67,7 @@ __all__ = [
     "ErrorCategory",
     "classify",
     "error_class_for_sqlstate",
+    "is_connection_error",
     "redact_dsn",
     "redact_params",
     "sanitize_message",

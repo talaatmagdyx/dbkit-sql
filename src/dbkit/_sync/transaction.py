@@ -17,12 +17,12 @@ from collections.abc import Iterator
 from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy import Connection, Engine
 
 from .._core.errors import (
     DatabaseCommitUnknownError,
     classify,
+    is_connection_error,
 )
 from ..observability import logging as obslog
 from ..observability import metrics as m
@@ -65,20 +65,6 @@ class TransactionScope(ConnectionScope):
             raise
         else:
             nested.commit()
-
-
-def _is_connection_error(exc: BaseException) -> bool:
-    """Whether ``exc`` indicates the connection itself is broken, not just a query failure (§15).
-
-    Prefers SQLAlchemy's own per-dialect disconnect detection (``connection_invalidated``,
-    computed by each dialect's ``is_disconnect()`` when it wraps the driver exception) over a
-    blanket ``OperationalError`` check — ``OperationalError`` also covers many transient-but-
-    not-disconnected conditions (e.g. some lock/resource errors), which would otherwise
-    over-classify ordinary failures as commit-unknown.
-    """
-    if isinstance(exc, DBAPIError):
-        return exc.connection_invalidated
-    return isinstance(exc, (ConnectionError, OSError))
 
 
 class _TransactionManager:
@@ -225,7 +211,7 @@ class _TransactionManager:
             self._trans.commit()
         except BaseException as commit_exc:
             # A failure during COMMIT may mean the transaction committed anyway (§15).
-            if _is_connection_error(commit_exc):
+            if is_connection_error(commit_exc):
                 raise DatabaseCommitUnknownError(
                     "connection failed during COMMIT; transaction outcome is unknown",
                     original=commit_exc,

@@ -11,18 +11,26 @@ consumers, background workers, and CLIs.
 - **Resilient.** Circuit breaker, idempotency-gated retries, and per-database concurrency
   limits, all opt-in and independently configurable.
 - **High-throughput paths.** Bounded-memory streaming, adaptive-batch bulk insert/upsert,
-  PostgreSQL COPY, and exactly-once consumer helpers (inbox pattern + micro-batching).
+  PostgreSQL COPY, and effectively-once consumer helpers (transactional inbox pattern +
+  micro-batching) — delivery is at-least-once, processing is deduplicated in the same
+  transaction as the business write.
 - **Multi-database and sharded.** Named databases, pluggable shard resolvers (hash/range/
-  directory/callable), replica routing with read-your-writes, and LRU engine eviction for
-  dynamic per-tenant deployments.
+  directory/callable), replica routing with a read-your-writes override (pins reads to the
+  primary for the scope, not lag-aware replica tracking), and LRU engine eviction for
+  dynamic per-tenant deployments. No cross-shard transaction support — use an outbox/saga
+  pattern for multi-shard writes, and note that dbkit trusts the `DatabaseTarget`/shard key
+  you give it; tenant/shard authorization is your application's responsibility.
 - **Fully observable.** Structured logging, a metrics protocol (Prometheus adapter included),
   and OpenTelemetry tracing — statement text and parameters never reach a log, span, or metric
   label.
 - **Built on SQLAlchemy.** Pooling, dialects, and driver integration are SQLAlchemy's job —
   dbkit adds routing, resilience, observability, and bulk/streaming ergonomics on top.
 
-PostgreSQL is the first-class optimized target (psycopg 3 default, asyncpg optional); the
-dialect-agnostic core runs on any SQLAlchemy backend.
+PostgreSQL is the first-class optimized target with psycopg 3 (the default driver, and the
+only one with a sync API — COPY and pipeline mode also require it). asyncpg is CI-covered for
+the async frontend (reads/writes/transactions, resilience/chaos, sharding/replicas, CLI) but is
+async-only and has no COPY/pipeline support; the dialect-agnostic core otherwise runs on any
+SQLAlchemy backend.
 
 ## Install
 
@@ -69,8 +77,14 @@ db.close()
 
 See **Examples** in the repository's `examples/` directory for a runnable, idempotent script
 covering every feature — transactions & savepoints, retries & the circuit breaker, streaming,
-bulk insert/upsert, COPY, exactly-once consumer processing, micro-batching, sharding/replica
+bulk insert/upsert, COPY, effectively-once consumer processing, micro-batching, sharding/replica
 routing, and sync/async parity.
+
+## When not to use dbkit
+
+Not an ORM (no relationship loading, sessions, or model layer — pair a real ORM alongside it if
+your domain needs that) and not a migration tool (pair it with Alembic or similar). Database-only
+by design: no broker/message-queue client ships with it.
 
 ## Where to go next
 

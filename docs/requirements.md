@@ -18,9 +18,13 @@ Key guarantees:
   retried automatically; commit-unknown is a distinct outcome.
 - Cancellation always cleans up connections (async); pool, query, and transaction metrics
   are exported; sensitive data is redacted.
-- Multiple databases, deterministic shard routing, primary/replica routing.
-- PostgreSQL is the first-class optimized target (psycopg 3 default, asyncpg optional);
-  the dialect-agnostic core runs on any SQLAlchemy backend.
+- Multiple databases, deterministic shard routing, primary/replica routing. No cross-shard
+  transactions; dbkit trusts the `DatabaseTarget`/shard key it's given — tenant/shard
+  authorization is the application's responsibility.
+- PostgreSQL is the first-class optimized target with psycopg 3 (the default driver, and the
+  only one with a sync API — COPY and pipeline mode also require it); asyncpg is CI-covered for
+  the async frontend but is async-only and has no COPY/pipeline support. The dialect-agnostic
+  core otherwise runs on any SQLAlchemy backend.
 
 The full 38-section source specification (architecture, module layout, API surface,
 pooling, timeouts, error model, retries, circuit breaker, concurrency, bulk/streaming,

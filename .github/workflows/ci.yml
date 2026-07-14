@@ -68,3 +68,30 @@ jobs:
         run: uv run python -m benchmarks.soak --dsn "$DBKIT_TEST_DSN" --duration 60 --kill-every 20
       - name: benchmark smoke (best-effort, non-gating)
         run: uv run python -m benchmarks --dsn "$DBKIT_TEST_DSN" --no-save || echo "benchmarks best-effort"
+
+  integration-asyncpg:
+    # asyncpg is async-only (no sync engine support) and doesn't implement the psycopg-only raw
+    # driver escape hatches (COPY, pipeline mode, PgBouncer autoprep control) — those tests
+    # self-skip via the `requires_psycopg` fixture. This job covers everything else: CRUD,
+    # transactions/savepoints, cardinality, resilience/chaos, sharding/replicas, and the CLI.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dbkit
+          POSTGRES_PASSWORD: dbkit
+          POSTGRES_DB: dbkit
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dbkit"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    env:
+      DBKIT_TEST_DSN: postgresql+asyncpg://dbkit:dbkit@localhost:5432/dbkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+      - name: async-only integration + chaos/resilience suite
+        run: uv run pytest -q -m integration --ignore=tests/integration/test_sync_integration.py

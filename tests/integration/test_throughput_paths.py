@@ -167,7 +167,9 @@ async def test_insert_many_unnest_rolls_back_atomically(db: AsyncDatabase) -> No
 # --- pipeline mode (psycopg escape hatch) --------------------------------------------- #
 
 
-async def test_pipeline_mode_dependent_statements(db: AsyncDatabase) -> None:
+async def test_pipeline_mode_dependent_statements(
+    db: AsyncDatabase, requires_psycopg: None
+) -> None:
     await db.execute(
         sql("CREATE TABLE IF NOT EXISTS dbkit_p3_pipe_a (id int primary key, v text)"),
         target=TARGET,
@@ -195,7 +197,9 @@ async def test_pipeline_mode_dependent_statements(db: AsyncDatabase) -> None:
     assert count_b == 200
 
 
-async def test_pipeline_mode_rollback_still_discards(db: AsyncDatabase) -> None:
+async def test_pipeline_mode_rollback_still_discards(
+    db: AsyncDatabase, requires_psycopg: None
+) -> None:
     await db.execute(sql("TRUNCATE dbkit_p3_pipe_a, dbkit_p3_pipe_b"), target=TARGET)
     with pytest.raises(RuntimeError):
         async with db.transaction(target=TARGET) as tx, tx.pipeline():
@@ -213,7 +217,9 @@ async def test_pipeline_mode_rollback_still_discards(db: AsyncDatabase) -> None:
 # --- PgBouncer-compatible pooling mode ------------------------------------------------- #
 
 
-async def test_pgbouncer_compatible_disables_prepare_threshold(base_config: dict) -> None:
+async def test_pgbouncer_compatible_disables_prepare_threshold(
+    base_config: dict, requires_psycopg: None
+) -> None:
     cfg = {
         **base_config,
         "defaults": {**base_config["defaults"], "pool": {"pgbouncer_compatible": True}},
@@ -232,7 +238,9 @@ async def test_pgbouncer_compatible_disables_prepare_threshold(base_config: dict
         await db.close()
 
 
-async def test_pgbouncer_compatible_off_by_default(base_config: dict) -> None:
+async def test_pgbouncer_compatible_off_by_default(
+    base_config: dict, requires_psycopg: None
+) -> None:
     db = AsyncDatabase.from_config(base_config)
     await db.start()
     try:
@@ -247,7 +255,7 @@ async def test_pgbouncer_compatible_off_by_default(base_config: dict) -> None:
 # --- COPY --------------------------------------------------------------------------- #
 
 
-async def test_copy_records(db: AsyncDatabase) -> None:
+async def test_copy_records(db: AsyncDatabase, requires_psycopg: None) -> None:
     await db.execute(
         sql("CREATE TABLE IF NOT EXISTS dbkit_p3_copy (id int, v text)"), target=TARGET
     )
@@ -302,7 +310,7 @@ async def test_process_once_reports_duplicate(db: AsyncDatabase) -> None:
 # --- batch collector driving a COPY ------------------------------------------------- #
 
 
-async def test_batch_collector_drives_copy(db: AsyncDatabase) -> None:
+async def test_batch_collector_drives_copy(db: AsyncDatabase, requires_psycopg: None) -> None:
     await db.execute(
         sql("CREATE TABLE IF NOT EXISTS dbkit_p3_batch (id int, v text)"), target=TARGET
     )

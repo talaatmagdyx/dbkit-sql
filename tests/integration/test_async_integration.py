@@ -6,11 +6,14 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import pytest
 
 from dbkit import AsyncDatabase, DatabaseTarget, Query, sql
 from dbkit.errors import (
+    DatabaseCommitUnknownError,
+    DatabaseError,
     DatabasePoolTimeoutError,
     DatabaseQueryTimeoutError,
     DatabaseResultError,
@@ -100,6 +103,42 @@ async def test_transaction_commit(adb: AsyncDatabase) -> None:
         await tx.execute(INSERT, {"id": 11, "email": "u@x.com"})
     count = await adb.fetch_value(sql("SELECT count(*) FROM dbkit_users"), target=TARGET)
     assert count == 2
+
+
+async def test_execute_commit_failure_with_broken_connection_raises_commit_unknown(
+    adb: AsyncDatabase,
+) -> None:
+    """``db.execute()``'s auto-commit path must give the same commit-unknown guarantee as an
+    explicit ``db.transaction()`` — a connection failure during COMMIT is genuinely ambiguous
+    (§15) and must never be silently retried or leaked as a raw, unclassified exception."""
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.ext.asyncio import AsyncConnection
+
+    async def flaky_commit(self: AsyncConnection) -> None:
+        raise OperationalError(
+            "COMMIT", {}, ConnectionResetError("simulated drop"), connection_invalidated=True
+        )
+
+    with patch.object(AsyncConnection, "commit", flaky_commit):
+        with pytest.raises(DatabaseCommitUnknownError) as info:
+            await adb.execute(INSERT, {"id": 12, "email": "commit-unknown@x.com"}, target=TARGET)
+    assert info.value.transaction_state_unknown is True
+
+
+async def test_execute_commit_failure_without_broken_connection_is_classified(
+    adb: AsyncDatabase,
+) -> None:
+    """A non-connection COMMIT failure must still surface as a normalized ``DatabaseError``,
+    not a raw driver/SQLAlchemy exception."""
+    from sqlalchemy.ext.asyncio import AsyncConnection
+
+    async def flaky_commit(self: AsyncConnection) -> None:
+        raise RuntimeError("some non-connection commit-time failure")
+
+    with patch.object(AsyncConnection, "commit", flaky_commit):
+        with pytest.raises(DatabaseError) as info:
+            await adb.execute(INSERT, {"id": 13, "email": "classified@x.com"}, target=TARGET)
+    assert not isinstance(info.value, DatabaseCommitUnknownError)
 
 
 async def test_transaction_isolation_read_only_deferrable(adb: AsyncDatabase) -> None:

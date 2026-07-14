@@ -24,8 +24,11 @@ def _copy_sql(table: str, columns: Sequence[str]) -> str:
 
 
 def _require_psycopg(driver_conn: Any) -> None:
-    # psycopg AsyncConnection/Connection expose a ``cursor`` with ``.copy``; asyncpg does not.
-    if not hasattr(driver_conn, "cursor"):
+    # Both psycopg and asyncpg's raw connections expose a `cursor` method (incompatible
+    # signatures/purposes — asyncpg's is for server-side result cursors, not COPY), so `cursor`
+    # alone can't distinguish them. `pipeline` is psycopg-only (mirrors postgres/pipeline.py's
+    # own check) and reliably identifies a real psycopg connection.
+    if not hasattr(driver_conn, "pipeline"):
         raise DatabaseUnsupportedOperationError(
             "COPY requires the psycopg driver; this target uses a different driver"
         )

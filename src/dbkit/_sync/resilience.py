@@ -15,19 +15,32 @@ from __future__ import annotations
 import contextlib
 import random
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Iterator, Awaitable, Callable
 from typing import TypeVar
 
-from .._core.circuit import CircuitBreaker, counts_as_failure
+from .._core.circuit import CircuitBreaker, CircuitState, counts_as_failure
 from .._core.config import RetryConfig
-from .._core.errors import DatabaseCircuitOpenError, DatabaseError
+from .._core.errors import DatabaseCircuitOpenError, DatabaseError, DatabaseOverloadedError
 from .._core.policies import backoff_delay_ms, should_retry
 from .._core.query import Query
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink
-from ._compat import sleep
+from ._compat import semaphore_acquire, sleep
 
 T = TypeVar("T")
+
+#: Numeric value of each circuit-breaker state, for the ``CIRCUIT_STATE`` gauge (§16).
+_CIRCUIT_STATE_VALUE = {
+    CircuitState.CLOSED: 0.0,
+    CircuitState.HALF_OPEN: 1.0,
+    CircuitState.OPEN: 2.0,
+}
+
+
+def _emit_circuit_state(
+    breaker: CircuitBreaker, now: float, metrics: MetricsSink, labels: dict[str, str]
+) -> None:
+    metrics.gauge(m.CIRCUIT_STATE, _CIRCUIT_STATE_VALUE[breaker.state(now)], labels=labels)
 
 
 def run_with_retries(
@@ -51,18 +64,23 @@ def run_with_retries(
     while True:
         attempt += 1
         now = time.monotonic()
-        if breaker is not None and not breaker.allow(now):
-            raise DatabaseCircuitOpenError(
-                "circuit is open for this target",
-                database_name=labels.get("database"),
-                role=labels.get("role"),
-                query_name=labels.get("query_name"),
-            )
+        if breaker is not None:
+            allowed = breaker.allow(now)
+            _emit_circuit_state(breaker, now, metrics, labels)
+            if not allowed:
+                raise DatabaseCircuitOpenError(
+                    "circuit is open for this target",
+                    database_name=labels.get("database"),
+                    role=labels.get("role"),
+                    query_name=labels.get("query_name"),
+                )
         try:
             result = operation()
         except DatabaseError as err:
-            if breaker is not None and counts_as_failure(err):
-                breaker.on_failure(time.monotonic())
+            if breaker is not None:
+                if counts_as_failure(err):
+                    breaker.on_failure(time.monotonic())
+                _emit_circuit_state(breaker, time.monotonic(), metrics, labels)
             if not should_retry(
                 err,
                 query=query,
@@ -81,6 +99,7 @@ def run_with_retries(
         else:
             if breaker is not None:
                 breaker.on_success(time.monotonic())
+                _emit_circuit_state(breaker, time.monotonic(), metrics, labels)
             return result
 
 
@@ -100,9 +119,23 @@ class ConcurrencyLimiter:
             tier: threading.Semaphore(n) for tier, n in limits.items() if n and n > 0
         }
 
-    def acquire(self, tier: str) -> contextlib.AbstractContextManager[None]:
-        """A context manager holding one slot of ``tier`` for its duration (no-op if unbounded)."""
+    @contextlib.contextmanager
+    def acquire(self, tier: str, *, timeout: float | None = None) -> Iterator[None]:
+        """Hold one slot of ``tier`` for the block's duration (no-op if unbounded).
+
+        Raises :class:`DatabaseOverloadedError` if no slot frees up within ``timeout`` —
+        without this bound, a saturated tier would queue callers indefinitely, invisibly to
+        dbkit's own timeout/deadline machinery (§17).
+        """
         sem = self._sems.get(tier)
         if sem is None:
-            return contextlib.nullcontext()
-        return sem
+            yield
+            return
+        if not semaphore_acquire(sem, timeout):
+            raise DatabaseOverloadedError(
+                f"concurrency limit reached for tier {tier!r}; no slot freed up within {timeout}s"
+            )
+        try:
+            yield
+        finally:
+            sem.release()

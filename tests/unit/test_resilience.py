@@ -10,10 +10,13 @@ from dbkit._core.config import RetryConfig
 from dbkit._core.query import Query, sql
 from dbkit.errors import (
     DatabaseCircuitOpenError,
+    DatabaseConnectionError,
     DatabaseSerializationError,
     DatabaseUniqueViolationError,
 )
-from dbkit.observability.metrics import NoopMetrics
+from dbkit.observability.metrics import CIRCUIT_STATE, NoopMetrics
+
+from ..conftest import RecordingMetrics
 
 READ = Query(name="r", statement=sql("SELECT 1"), operation="read", idempotent=True)
 WRITE = Query(name="w", statement=sql("INSERT"), operation="write")
@@ -106,8 +109,6 @@ async def test_breaker_opens_and_blocks() -> None:
 
     # DatabaseSerializationError is CONCURRENCY category -> does NOT trip the breaker by design;
     # use a connection error to trip it.
-    from dbkit.errors import DatabaseConnectionError
-
     async def conn_fail() -> str:
         raise DatabaseConnectionError("down")
 
@@ -133,6 +134,51 @@ async def test_breaker_opens_and_blocks() -> None:
         )
 
 
+async def test_circuit_state_gauge_reflects_open_after_threshold_breach(
+    recording_metrics: RecordingMetrics,
+) -> None:
+    """The CIRCUIT_STATE gauge is the signal an on-call engineer needs to answer "is the
+    breaker open right now" — it must flip to OPEN (2.0) the moment the breaker trips."""
+    breaker = CircuitBreaker(failure_threshold=1, window_seconds=100, open_seconds=100)
+
+    async def conn_fail() -> str:
+        raise DatabaseConnectionError("down")
+
+    with pytest.raises(DatabaseConnectionError):
+        await run_with_retries(
+            conn_fail,
+            query=READ,
+            retry=_retry(attempts=1),
+            breaker=breaker,
+            metrics=recording_metrics,
+            labels=LABELS,
+        )
+    gauge_values = [v for n, v, _ in recording_metrics.gauge_calls if n == CIRCUIT_STATE]
+    assert gauge_values[0] == 0.0  # CLOSED, observed before the failing call
+    assert gauge_values[-1] == 2.0  # OPEN, observed right after the failure trips it
+
+
+def test_circuit_state_gauge_values_match_every_breaker_state() -> None:
+    """Direct, clock-injectable check that every :class:`CircuitState` maps to the documented
+    gauge value (0=closed, 1=half_open, 2=open), independent of real wall-clock timing."""
+    from dbkit._async.resilience import _emit_circuit_state
+
+    metrics = RecordingMetrics()
+    breaker = CircuitBreaker(
+        failure_threshold=1, window_seconds=10, open_seconds=5, half_open_max_calls=1
+    )
+
+    _emit_circuit_state(breaker, 0.0, metrics, LABELS)  # CLOSED
+    breaker.on_failure(0.0)
+    _emit_circuit_state(breaker, 0.0, metrics, LABELS)  # OPEN
+    _emit_circuit_state(breaker, 6.0, metrics, LABELS)  # cooldown elapsed -> HALF_OPEN
+    breaker.on_success(6.0)
+    _emit_circuit_state(breaker, 6.0, metrics, LABELS)  # CLOSED again
+
+    values = [v for n, v, _ in metrics.gauge_calls if n == CIRCUIT_STATE]
+    assert values == [0.0, 2.0, 1.0, 0.0]
+
+
 async def test_concurrency_limiter_bounds_parallelism() -> None:
     limiter = ConcurrencyLimiter({"reads": 2})
     active = 0
@@ -156,3 +202,47 @@ async def test_concurrency_limiter_unbounded_tier_is_noop() -> None:
         pass  # must not raise
     async with limiter.acquire("writes"):  # unknown tier -> no-op
         pass
+
+
+async def test_concurrency_limiter_saturated_tier_raises_overloaded_within_timeout() -> None:
+    """A saturated tier must fail with a classified, observable error within the requested
+    timeout — not queue the caller indefinitely (§17)."""
+    from dbkit.errors import DatabaseOverloadedError
+
+    limiter = ConcurrencyLimiter({"writes": 1})
+    holder_ready = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def hold_the_slot() -> None:
+        async with limiter.acquire("writes"):
+            holder_ready.set()
+            await release_holder.wait()
+
+    holder_task = asyncio.create_task(hold_the_slot())
+    await holder_ready.wait()
+    try:
+        start = asyncio.get_event_loop().time()
+        with pytest.raises(DatabaseOverloadedError, match="writes"):
+            async with limiter.acquire("writes", timeout=0.05):
+                pass
+        elapsed = asyncio.get_event_loop().time() - start
+        assert elapsed < 1.0  # bounded, not hung
+    finally:
+        release_holder.set()
+        await holder_task
+
+
+async def test_concurrency_limiter_acquires_once_a_slot_frees_within_timeout() -> None:
+    limiter = ConcurrencyLimiter({"writes": 1})
+    entered = False
+
+    async def hold_briefly() -> None:
+        async with limiter.acquire("writes"):
+            await asyncio.sleep(0.05)
+
+    holder_task = asyncio.create_task(hold_briefly())
+    await asyncio.sleep(0.01)  # let the holder acquire first
+    async with limiter.acquire("writes", timeout=1.0):
+        entered = True
+    assert entered
+    await holder_task

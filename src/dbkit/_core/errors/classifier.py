@@ -121,3 +121,18 @@ def classify(
 
 def _looks_like_dbapi(exc: BaseException) -> bool:
     return hasattr(exc, "sqlstate") or hasattr(exc, "pgcode") or hasattr(exc, "diag")
+
+
+def is_connection_error(exc: BaseException) -> bool:
+    """Whether ``exc`` indicates the connection itself is broken, not just a query failure (§15).
+
+    Used to decide whether a failure during COMMIT means the outcome is genuinely unknown
+    (§15) — prefers SQLAlchemy's own per-dialect disconnect detection
+    (``connection_invalidated``, computed by each dialect's ``is_disconnect()`` when it wraps
+    the driver exception) over a blanket ``OperationalError`` check — ``OperationalError`` also
+    covers many transient-but-not-disconnected conditions (e.g. some lock/resource errors),
+    which would otherwise over-classify ordinary failures as commit-unknown.
+    """
+    if sa_exc is not None and isinstance(exc, sa_exc.DBAPIError):
+        return bool(exc.connection_invalidated)
+    return isinstance(exc, (ConnectionError, OSError))

@@ -25,10 +25,12 @@ from .._core import bulk as bulk_mod
 from .._core.circuit import CircuitBreaker
 from .._core.config import DbkitConfig
 from .._core.errors import (
+    DatabaseCommitUnknownError,
     DatabaseError,
     DatabaseRoutingError,
     DatabaseUnsupportedOperationError,
     classify,
+    is_connection_error,
 )
 from .._core.policies import effective_timeout
 from .._core.query import Query, coerce_statement
@@ -282,9 +284,15 @@ class Database:
         tier = "writes" if (q and q.is_write) else "reads"
 
         def attempt() -> Any:
+            # Bound the concurrency-limiter wait by the same effective timeout the query
+            # itself would get, so a saturated tier fails with a classified error instead of
+            # queueing invisibly forever (§17).
+            limiter_timeout = effective_timeout(
+                timeout, q, self._config.defaults.query_timeout_seconds, deadline, time.monotonic()
+            )
             with (
-                limiter.acquire("database"),
-                limiter.acquire(tier),
+                limiter.acquire("database", timeout=limiter_timeout),
+                limiter.acquire(tier, timeout=limiter_timeout),
                 self._scope(
                     target, query, call_timeout=timeout, deadline=deadline, commit=commit
                 ) as scope,
@@ -350,8 +358,6 @@ class Database:
             op_start = time.monotonic()
             try:
                 yield scope
-                if commit:
-                    conn.commit()
             except BaseException as exc:
                 with contextlib.suppress(Exception):
                     conn.rollback()
@@ -360,6 +366,37 @@ class Database:
                         m.OP_ERRORS, labels={**labels, "error_category": exc.category.value}
                     )
                 raise
+            else:
+                if commit:
+                    try:
+                        conn.commit()
+                    except BaseException as commit_exc:
+                        # Mirror _TransactionManager._commit(): a failure during COMMIT
+                        # may mean the write committed anyway (§15) — never silently swallow
+                        # that ambiguity, and never leave the exception unclassified either
+                        # (both would previously happen only on this auto-commit write path).
+                        if is_connection_error(commit_exc):
+                            err: DatabaseError = DatabaseCommitUnknownError(
+                                "connection failed during COMMIT; transaction outcome is unknown",
+                                original=commit_exc,
+                                database_name=entry.key.database,
+                                shard_id=entry.key.shard_id,
+                                role=entry.key.role,
+                                query_name=query_name,
+                            )
+                        else:
+                            with contextlib.suppress(Exception):
+                                conn.rollback()
+                            err = classify(
+                                commit_exc,
+                                query_name=query_name,
+                                database_name=entry.key.database,
+                                role=entry.key.role,
+                            )
+                        self._metrics.incr(
+                            m.OP_ERRORS, labels={**labels, "error_category": err.category.value}
+                        )
+                        raise err from commit_exc
             finally:
                 duration = time.monotonic() - op_start
                 with contextlib.suppress(Exception):

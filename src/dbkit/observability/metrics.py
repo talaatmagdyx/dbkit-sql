@@ -67,6 +67,9 @@ TX_DURATION = "db_transaction_duration_seconds"
 TX_ROLLBACK = "db_transaction_rollback_total"
 COMMIT_UNKNOWN = "db_commit_unknown_total"
 
+#: Current circuit breaker state per db+shard+role: 0=closed, 1=half_open, 2=open (§16).
+CIRCUIT_STATE = "db_circuit_breaker_state"
+
 STREAM_ROWS = "db_stream_rows_total"
 STREAM_BYTES = "db_stream_bytes_total"
 BULK_ROWS = "db_bulk_rows_total"

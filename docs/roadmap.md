@@ -52,10 +52,13 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
 - PostgreSQL `COPY` (`db.copy_records`) via the psycopg raw-driver escape hatch — ~90× faster
   than per-row inserts in-benchmark; bounded memory.
 - Consumer integration (`dbkit.integrations`): inbox dedup + `process_once` + `ack_after_commit`
-  (§28 exactly-once flow) and `BatchCollector` micro-batching. These are the DB-side primitives
-  a message consumer needs; dbkit is scoped as **database-only** and deliberately does not ship
-  a broker-facing adapter (no RabbitMQ/Celery client dependency) — an application wires these
-  primitives into its own consumer loop.
+  (§28 effectively-once flow — delivery is at-least-once; the inbox row and business write
+  commit atomically, so redelivery is a no-op) and `BatchCollector` micro-batching. These are
+  the DB-side primitives a message consumer needs; dbkit is scoped as **database-only** and
+  deliberately does not ship a broker-facing adapter (no RabbitMQ/Celery client dependency) —
+  an application wires these primitives into its own consumer loop. No built-in poison-message/
+  max-retry tracking — track attempt counts in the inbox table or via the broker's own
+  redelivery count if you need that.
 - `unnest()` bulk strategy (`postgres/unnest.py`, `strategy="unnest"` on `insert_many`/
   `upsert_many`): one array-per-column bind instead of one bind per column per row, so batch
   size isn't limited by the 65535 bind-parameter ceiling — ~32× faster than `execute_many` at
@@ -79,7 +82,13 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
   forces reads back to the primary so they observe writes made earlier in the same scope.
 - Engine LRU eviction (`AsyncEngineRegistry(evict_lru=True)`): reaching `max_engines` disposes
   the least-recently-used engine instead of failing — for dynamic per-tenant deployments.
-  Default (`evict_lru=False`) keeps the strict hard-cap.
+  Verified safe under concurrent use: SQLAlchemy's `Engine.dispose()` only closes idle pooled
+  connections, so a connection already checked out from the evicted engine keeps working until
+  the caller closes it (regression-tested). Default (`evict_lru=False`) keeps the strict
+  hard-cap.
+- No cross-shard transactions — an application needing atomic multi-shard writes needs its own
+  outbox/saga pattern; dbkit also does not authorize `DatabaseTarget`/shard-key values, so
+  tenant/shard access control is the calling application's responsibility.
 - Per-database connection budgets (`DatabaseConfig.enforce_connection_budget`): a single
   database can fail startup on its own budget, independent of the global one.
 
@@ -99,6 +108,15 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
   correctness fix under PgBouncer's *transaction* pooling, where a connection may hit a
   different physical backend each transaction. Every session setting was already scoped with
   `SET LOCAL`/per-transaction, never a bare session-level `SET`, so no other change was needed.
+- Asyncpg CI lane (`.github/workflows/ci.yml`, `integration-asyncpg` job): the async-only
+  integration/chaos/sharding/CLI suite runs against asyncpg in addition to psycopg (sync tests
+  and the psycopg-only COPY/pipeline/PgBouncer-autoprep tests self-skip via the
+  `requires_psycopg` fixture when the DSN isn't psycopg). Found and fixed one real bug in the
+  process: `postgres/copy.py`'s driver guard checked for a `cursor` attribute, which asyncpg's
+  raw connection also has (an incompatible, unrelated method) — it now checks for `pipeline`
+  (psycopg-only, matching `postgres/pipeline.py`'s own guard), so COPY against a non-psycopg
+  driver now fails with a clean `DatabaseUnsupportedOperationError` instead of a confusing
+  raw `TypeError`.
 
 No further stretch items remain from the original spec. dbkit is intentionally scoped as a
 database-only toolkit — no broker/message-queue adapter is planned.

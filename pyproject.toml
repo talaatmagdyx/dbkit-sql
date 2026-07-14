@@ -38,7 +38,7 @@ orjson = ["orjson>=3.10"]
 cli = ["typer>=0.12"]
 bench = ["psutil>=5.9"]
 dev = [
-    "dbkit[psycopg,yaml,prometheus,pydantic,bench,otel,cli]",
+    "dbkit[psycopg,asyncpg,yaml,prometheus,pydantic,bench,otel,cli]",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",

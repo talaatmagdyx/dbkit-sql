@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — production-readiness review findings
+- **`db.execute()`'s auto-commit path could leak a raw, unclassified exception and silently
+  skip commit-unknown detection.** A connection failure during the implicit `COMMIT` (e.g. the
+  server commits but the client never sees the ack) now raises `DatabaseCommitUnknownError`
+  exactly like an explicit `db.transaction()` does, and any other commit failure is now run
+  through `classify()` instead of propagating a raw SQLAlchemy/driver exception. Extracted the
+  shared `is_connection_error()` check to `_core/errors/classifier.py` so both the transaction
+  and one-shot-write paths use the same logic.
+- **Concurrency-limiter tiers (`ConcurrencyConfig.reads`/`writes`/`bulk_writes`/`database`) had
+  no acquire timeout.** A saturated tier queued callers indefinitely, invisible to dbkit's own
+  timeout/deadline machinery. `ConcurrencyLimiter.acquire()` now bounds the wait by the same
+  effective timeout the query itself would get, raising `DatabaseOverloadedError` (an
+  already-declared but previously unused error class) on saturation. Bulk/COPY paths are
+  intentionally left unbounded — they're expected to be slower and have their own retry story.
+- **No visibility into circuit breaker state.** Added the `db_circuit_breaker_state` gauge
+  (0=closed, 1=half_open, 2=open), emitted on every `CircuitBreaker.state()` check/transition —
+  the signal an on-call engineer needs to answer "is the breaker open right now."
+- **`postgres/copy.py`'s driver guard could misfire under asyncpg.** It checked for a `cursor`
+  attribute to detect psycopg, but asyncpg's raw connection also has a `cursor` method
+  (incompatible signature/purpose), so COPY against asyncpg failed with a confusing raw
+  `TypeError` instead of the intended `DatabaseUnsupportedOperationError`. Now checks for
+  `pipeline` instead (psycopg-only, matching `postgres/pipeline.py`'s own guard).
+- Verified (and regression-tested) that engine LRU eviction is safe under concurrent use:
+  SQLAlchemy's `Engine.dispose()` only closes idle pooled connections, so a connection already
+  checked out from an evicted engine keeps working until the caller closes it.
+
+### Added — asyncpg CI coverage
+- New `integration-asyncpg` CI job runs the async-only integration/chaos/sharding/CLI suite
+  against asyncpg (previously untested in CI). Sync-only tests and the psycopg-only COPY/
+  pipeline/PgBouncer-autoprep tests self-skip via a new `requires_psycopg` fixture when the
+  configured driver isn't psycopg, rather than being silently excluded.
+
 ### Added — full API reference docs
 - `mkdocstrings[python]` wired into the docs site (`docs/api/*.md`): every public class/method
   across the facade, config, query/routing, errors, observability, and integrations modules is

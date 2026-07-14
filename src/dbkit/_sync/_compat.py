@@ -9,6 +9,7 @@ sync world, so the cancellation helpers are inert.
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 from typing import Any, Iterator
 
@@ -55,6 +56,15 @@ def pipeline_scope(sa_conn: Any) -> contextlib.AbstractContextManager[None]:
 def timeout_scope(seconds: float | None) -> contextlib.AbstractContextManager[None]:
     """No client-side deadline in the sync build; server ``statement_timeout`` does the work."""
     return contextlib.nullcontext()
+
+
+def semaphore_acquire(sem: threading.Semaphore, timeout: float | None) -> bool:
+    """Acquire ``sem``, returning False (never raising) if ``timeout`` elapses first.
+
+    ``threading.Semaphore.acquire(timeout=...)`` already returns a bool instead of raising,
+    unlike ``asyncio.Semaphore`` (§17) — this just gives both frontends the same contract.
+    """
+    return sem.acquire(timeout=timeout)
 
 
 def is_cancellation(exc: BaseException) -> bool:

@@ -68,6 +68,18 @@ def pg_dsn() -> Iterator[str]:
 
 
 @pytest.fixture
+def requires_psycopg(pg_dsn: str) -> None:
+    """Skip a test that exercises the psycopg-only raw-driver escape hatch (COPY, pipeline
+    mode, PgBouncer autoprep control) — these have no asyncpg equivalent (§7.3, §19.2)."""
+    from urllib.parse import urlsplit
+
+    scheme = urlsplit(pg_dsn).scheme
+    driver = scheme.split("+", 1)[1] if "+" in scheme else scheme
+    if driver not in ("psycopg", "psycopg2"):
+        pytest.skip(f"requires the psycopg driver for this raw-driver escape hatch; got {driver!r}")
+
+
+@pytest.fixture
 def base_config(pg_dsn: str) -> dict:
     return {
         "environment": "test",

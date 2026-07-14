@@ -10,18 +10,37 @@ message consumers, background workers, and CLIs.
 - **Built on SQLAlchemy.** Pooling, dialects, and driver integration are SQLAlchemy's job —
   dbkit adds routing, resilience, observability, and bulk/streaming ergonomics.
 - **Multi-database and sharded.** Named databases, pluggable shard resolvers (hash/range/
-  directory/callable), replica routing with read-your-writes, LRU engine eviction.
+  directory/callable), replica routing with a read-your-writes override (pins reads to the
+  primary for the scope — not lag-aware replica tracking), LRU engine eviction. dbkit does not
+  support cross-shard transactions; use an outbox/saga pattern for multi-shard writes.
 - **Fully observable.** Structured logging, Prometheus metrics, and OpenTelemetry tracing.
-- **PostgreSQL first-class** (psycopg 3 default, asyncpg optional), general across any
-  SQLAlchemy backend.
+- **PostgreSQL first-class with psycopg 3** (the default driver, and the only one with a sync
+  API — COPY and pipeline mode also require it). asyncpg is CI-covered for the async frontend
+  (reads/writes/transactions, resilience/chaos, sharding/replicas, CLI) but is async-only and
+  has no COPY/pipeline mode.
 
-> Status: **alpha**. Phases 1–5 are delivered: core runtime, resilience (retries, circuit
-> breaker, concurrency limits), high-throughput paths (streaming, bulk insert/upsert,
-> PostgreSQL COPY, exactly-once consumer helpers), multi-database & sharding (shard/replica
-> routing, read-your-writes, engine LRU eviction), and production hardening (OpenTelemetry
-> tracing, CLI, docs site, PyPI release readiness). See `docs/requirements.md` for the full
-> spec, `docs/roadmap.md` for phased delivery, and `docs/testing.md` for the test/chaos/
-> benchmark commands.
+> Status: **alpha**, no PyPI release yet. Phases 1–5 are delivered: core runtime, resilience
+> (retries, circuit breaker, concurrency limits), high-throughput paths (streaming, bulk
+> insert/upsert, PostgreSQL COPY, effectively-once consumer helpers via a transactional inbox),
+> multi-database & sharding (shard/replica routing, read-your-writes via primary-pinning, engine
+> LRU eviction), and production hardening (OpenTelemetry tracing, CLI, docs site, PyPI release
+> readiness). See `docs/requirements.md` for the full spec, `docs/roadmap.md` for phased
+> delivery, and `docs/testing.md` for the test/chaos/benchmark commands. dbkit trusts the
+> `DatabaseTarget`/shard key you give it — tenant/shard authorization is your application's
+> responsibility, not dbkit's.
+
+## When not to use dbkit
+
+dbkit is not an ORM — there's no relationship loading, unit-of-work session, or model layer.
+If your domain benefits from those, pair a real ORM with dbkit's config/resilience/observability
+layer, or use the ORM alone. dbkit also doesn't manage schema migrations; pair it with Alembic
+(or your migration tool of choice). It's a database-only toolkit: there's no broker/message-queue
+client — the inbox/batching helpers are primitives your own consumer loop wires in.
+
+**Compatibility:** Python 3.11+, SQLAlchemy 2.0.30+. CI runs the full suite against PostgreSQL 16
+with psycopg (sync + async) and the async-only integration/chaos/sharding suite with asyncpg
+(no sync API, no COPY/pipeline mode — those tests self-skip). Other SQLAlchemy-supported
+dialects are not covered by CI.
 
 ## Install
 
@@ -70,8 +89,8 @@ db.close()
 
 `examples/` has a runnable, idempotent script for every feature — transactions & savepoints,
 error classification, retries & the circuit breaker, streaming, bulk insert/upsert, PostgreSQL
-COPY, exactly-once consumer processing (inbox pattern), micro-batching, health/pool
-introspection, and sync/async parity:
+COPY, effectively-once consumer processing (transactional inbox pattern), micro-batching,
+health/pool introspection, and sync/async parity:
 
 ```bash
 export DBKIT_DSN=postgresql+psycopg://localhost/postgres

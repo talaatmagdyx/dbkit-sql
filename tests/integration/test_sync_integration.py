@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import pytest
 
 from dbkit import Database, DatabaseTarget, Query, sql
-from dbkit.errors import DatabaseUniqueViolationError
+from dbkit.errors import DatabaseCommitUnknownError, DatabaseError, DatabaseUniqueViolationError
 
 from ..conftest import RecordingMetrics
 
@@ -68,6 +69,39 @@ def test_sync_transaction_commit(sdb: Database) -> None:
         tx.execute(INSERT, {"id": 3, "email": "c@x.com"})
     count = sdb.fetch_value(sql("SELECT count(*) FROM dbkit_sync_users"), target=TARGET)
     assert count == 2
+
+
+def test_sync_execute_commit_failure_with_broken_connection_raises_commit_unknown(
+    sdb: Database,
+) -> None:
+    """Mirrors the async commit-unknown regression: db.execute()'s auto-commit path must give
+    the same guarantee as an explicit db.transaction() (§15)."""
+    from sqlalchemy import Connection
+    from sqlalchemy.exc import OperationalError
+
+    def flaky_commit(self: Connection) -> None:
+        raise OperationalError(
+            "COMMIT", {}, ConnectionResetError("simulated drop"), connection_invalidated=True
+        )
+
+    with patch.object(Connection, "commit", flaky_commit):
+        with pytest.raises(DatabaseCommitUnknownError) as info:
+            sdb.execute(INSERT, {"id": 90, "email": "commit-unknown@x.com"}, target=TARGET)
+    assert info.value.transaction_state_unknown is True
+
+
+def test_sync_execute_commit_failure_without_broken_connection_is_classified(
+    sdb: Database,
+) -> None:
+    from sqlalchemy import Connection
+
+    def flaky_commit(self: Connection) -> None:
+        raise RuntimeError("some non-connection commit-time failure")
+
+    with patch.object(Connection, "commit", flaky_commit):
+        with pytest.raises(DatabaseError) as info:
+            sdb.execute(INSERT, {"id": 91, "email": "classified@x.com"}, target=TARGET)
+    assert not isinstance(info.value, DatabaseCommitUnknownError)
 
 
 def test_sync_transaction_rollback(sdb: Database) -> None:

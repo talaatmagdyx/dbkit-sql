@@ -105,7 +105,10 @@ async def test_connection_count_stays_bounded_under_concurrency(base_config: dic
         await db.execute(sql("SELECT 1"), target=TARGET)  # warm
 
         async def op(i: int) -> int:
-            return await db.fetch_value(sql("SELECT :n"), {"n": i}, target=TARGET)
+            # CAST is required for asyncpg: a bare literal with no column context leaves the
+            # parameter untyped, and asyncpg (unlike psycopg) refuses to bind an int against an
+            # inferred text type — a SQLAlchemy+asyncpg limitation, not a dbkit one.
+            return await db.fetch_value(sql("SELECT CAST(:n AS integer)"), {"n": i}, target=TARGET)
 
         results = await asyncio.gather(*[op(i) for i in range(200)])
         assert sorted(results) == list(range(200))
