@@ -11,7 +11,8 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
 - Configuration model, loaders (dict/env/YAML), validation, connection-budget calculator.
 - `Query` + `sql()` wrapper + registry.
 - `DatabaseTarget` + named-database routing (primary).
-- Typed results, `map_to` mappers, cardinality enforcement.
+- Typed results, `map_to` mappers, cardinality enforcement (SQLAlchemy's own `Result.one()` /
+  `.one_or_none()` / `.scalar_one()` / `.scalars().all()`, not reimplemented).
 - Normalized error hierarchy, SQLSTATE-first classification (core codes).
 - Engine registry, instrumented connection pooling, leak detection.
 - Explicit transactions, savepoints, commit-unknown detection, cancellation cleanup.

@@ -1,7 +1,10 @@
 """Low-level execution primitives and the explicit connection scope (§11.1-11.2).
 
-The primitives take an already-acquired SQLAlchemy connection and run one statement. Higher
-layers (the facade, the connection scope, the transaction scope) reuse them so cardinality,
+The primitives take an already-acquired SQLAlchemy connection and run one statement. Cardinality
+(exactly-one / at-most-one / scalar) is enforced by SQLAlchemy's own native ``Result.one()`` /
+``.one_or_none()`` / ``.scalar_one()`` / ``.scalars().all()`` — not reimplemented here — with
+``NoResultFound`` / ``MultipleResultsFound`` translated to :class:`DatabaseResultError`. Higher
+layers (the facade, the connection scope, the transaction scope) reuse these primitives so
 mapping, timeouts, and error classification live in exactly one place.
 """
 
@@ -13,10 +16,11 @@ from typing import Any
 
 from sqlalchemy import RowMapping, text
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import MultipleResultsFound, NoResultFound
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .._core import result as result_mod
-from .._core.errors import classify
+from .._core.errors import DatabaseResultError, classify
 from .._core.query import Query, Statement, coerce_statement
 from ._compat import IS_ASYNC, pipeline_scope, timeout_scope
 
@@ -54,11 +58,72 @@ async def run_fetch(
     timeout: float | None,
     is_postgres: bool,
 ) -> list[RowMapping]:
-    """Execute a read and return buffered row mappings."""
+    """Execute a read and return every row mapping, no cardinality constraint."""
     async with timeout_scope(timeout):
         await _maybe_set_timeout(conn, timeout, is_postgres=is_postgres)
         cursor = await conn.execute(statement, params or {})
         return list(cursor.mappings().all())
+
+
+async def run_fetch_one(
+    conn: AsyncConnection,
+    statement: Statement,
+    params: Mapping[str, Any] | None,
+    *,
+    timeout: float | None,
+    is_postgres: bool,
+) -> RowMapping:
+    """Execute a read expecting exactly one row (``Result.one()``, §8.1)."""
+    async with timeout_scope(timeout):
+        await _maybe_set_timeout(conn, timeout, is_postgres=is_postgres)
+        cursor = await conn.execute(statement, params or {})
+        return cursor.mappings().one()
+
+
+async def run_fetch_optional(
+    conn: AsyncConnection,
+    statement: Statement,
+    params: Mapping[str, Any] | None,
+    *,
+    timeout: float | None,
+    is_postgres: bool,
+) -> RowMapping | None:
+    """Execute a read expecting zero or one row (``Result.one_or_none()``, §8.1)."""
+    async with timeout_scope(timeout):
+        await _maybe_set_timeout(conn, timeout, is_postgres=is_postgres)
+        cursor = await conn.execute(statement, params or {})
+        return cursor.mappings().one_or_none()
+
+
+async def run_fetch_value(
+    conn: AsyncConnection,
+    statement: Statement,
+    params: Mapping[str, Any] | None,
+    *,
+    timeout: float | None,
+    is_postgres: bool,
+) -> Any:
+    """Execute a read expecting exactly one row and take its first column
+    (``Result.scalar_one()``, §8.1)."""
+    async with timeout_scope(timeout):
+        await _maybe_set_timeout(conn, timeout, is_postgres=is_postgres)
+        cursor = await conn.execute(statement, params or {})
+        return cursor.scalar_one()
+
+
+async def run_fetch_values(
+    conn: AsyncConnection,
+    statement: Statement,
+    params: Mapping[str, Any] | None,
+    *,
+    timeout: float | None,
+    is_postgres: bool,
+) -> list[Any]:
+    """Execute a read and take the first column of every row (``Result.scalars().all()``)."""
+    async with timeout_scope(timeout):
+        await _maybe_set_timeout(conn, timeout, is_postgres=is_postgres)
+        cursor = await conn.execute(statement, params or {})
+        return list(cursor.scalars().all())
 
 
 async def run_execute(
@@ -130,10 +195,9 @@ class AsyncConnectionScope:
         name = q.name if q else "adhoc"
         return statement, q, timeout, name
 
-    async def _fetch(
-        self, query: object, params: Mapping[str, Any] | None
-    ) -> tuple[list[RowMapping], str]:
-        """Run a read and return ``(rows, query_name)`` (name reused for cardinality checks)."""
+    async def fetch_all(
+        self, query: object, params: Mapping[str, Any] | None = None, *, map_to: Any = None
+    ) -> list[Any]:
         statement, _q, timeout, name = self._resolve(query, params)
         try:
             rows = await run_fetch(
@@ -143,35 +207,96 @@ class AsyncConnectionScope:
             raise classify(
                 exc, query_name=name, database_name=self._database, role=self._role
             ) from exc
-        return rows, name
-
-    async def fetch_all(
-        self, query: object, params: Mapping[str, Any] | None = None, *, map_to: Any = None
-    ) -> list[Any]:
-        rows, _name = await self._fetch(query, params)
         return result_mod.map_rows(rows, map_to)
 
     async def fetch_one(
         self, query: object, params: Mapping[str, Any] | None = None, *, map_to: Any = None
     ) -> Any:
-        rows, name = await self._fetch(query, params)
-        return result_mod.enforce_one(rows, name, map_to)
+        statement, _q, timeout, name = self._resolve(query, params)
+        try:
+            row = await run_fetch_one(
+                self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
+            )
+        except NoResultFound as exc:
+            raise DatabaseResultError(
+                f"query {name!r} returned no rows, expected exactly one",
+                query_name=name,
+                database_name=self._database,
+                role=self._role,
+            ) from exc
+        except MultipleResultsFound as exc:
+            raise DatabaseResultError(
+                f"query {name!r} returned more than one row, expected exactly one",
+                query_name=name,
+                database_name=self._database,
+                role=self._role,
+            ) from exc
+        except Exception as exc:
+            raise classify(
+                exc, query_name=name, database_name=self._database, role=self._role
+            ) from exc
+        return result_mod.build_mapper(map_to)(row)
 
     async def fetch_optional(
         self, query: object, params: Mapping[str, Any] | None = None, *, map_to: Any = None
     ) -> Any | None:
-        rows, name = await self._fetch(query, params)
-        return result_mod.enforce_optional(rows, name, map_to)
+        statement, _q, timeout, name = self._resolve(query, params)
+        try:
+            row = await run_fetch_optional(
+                self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
+            )
+        except MultipleResultsFound as exc:
+            raise DatabaseResultError(
+                f"query {name!r} returned more than one row, expected at most one",
+                query_name=name,
+                database_name=self._database,
+                role=self._role,
+            ) from exc
+        except Exception as exc:
+            raise classify(
+                exc, query_name=name, database_name=self._database, role=self._role
+            ) from exc
+        if row is None:
+            return None
+        return result_mod.build_mapper(map_to)(row)
 
     async def fetch_value(self, query: object, params: Mapping[str, Any] | None = None) -> Any:
-        rows, name = await self._fetch(query, params)
-        return result_mod.enforce_value(rows, name)
+        statement, _q, timeout, name = self._resolve(query, params)
+        try:
+            return await run_fetch_value(
+                self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
+            )
+        except NoResultFound as exc:
+            raise DatabaseResultError(
+                f"query {name!r} returned no rows, expected a single scalar value",
+                query_name=name,
+                database_name=self._database,
+                role=self._role,
+            ) from exc
+        except MultipleResultsFound as exc:
+            raise DatabaseResultError(
+                f"query {name!r} returned more than one row, expected a single scalar value",
+                query_name=name,
+                database_name=self._database,
+                role=self._role,
+            ) from exc
+        except Exception as exc:
+            raise classify(
+                exc, query_name=name, database_name=self._database, role=self._role
+            ) from exc
 
     async def fetch_values(
         self, query: object, params: Mapping[str, Any] | None = None
     ) -> list[Any]:
-        rows, _name = await self._fetch(query, params)
-        return result_mod.extract_values(rows)
+        statement, _q, timeout, name = self._resolve(query, params)
+        try:
+            return await run_fetch_values(
+                self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
+            )
+        except Exception as exc:
+            raise classify(
+                exc, query_name=name, database_name=self._database, role=self._role
+            ) from exc
 
     async def execute(self, query: object, params: Mapping[str, Any] | None = None) -> int:
         statement, _q, timeout, name = self._resolve(query, params)

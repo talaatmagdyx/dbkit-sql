@@ -5,14 +5,8 @@ from typing import Any, TypedDict
 
 import pytest
 
-from dbkit._core.result import (
-    build_mapper,
-    enforce_one,
-    enforce_optional,
-    enforce_value,
-    extract_values,
-)
-from dbkit.errors import DatabaseMappingError, DatabaseResultError
+from dbkit._core.result import build_mapper
+from dbkit.errors import DatabaseMappingError
 
 
 class FakeRow(dict):
@@ -88,28 +82,3 @@ def test_pydantic_mapper() -> None:
 
     out = build_mapper(User)(row(id=1, name="a"))
     assert out.id == 1 and out.name == "a"
-
-
-def test_enforce_one() -> None:
-    assert enforce_one([row(id=1)], "q", None)["id"] == 1
-    with pytest.raises(DatabaseResultError, match="no rows"):
-        enforce_one([], "q", None)
-    with pytest.raises(DatabaseResultError, match="expected exactly one"):
-        enforce_one([row(id=1), row(id=2)], "q", None)
-
-
-def test_enforce_optional() -> None:
-    assert enforce_optional([], "q", None) is None
-    assert enforce_optional([row(id=1)], "q", None)["id"] == 1
-    with pytest.raises(DatabaseResultError):
-        enforce_optional([row(id=1), row(id=2)], "q", None)
-
-
-def test_enforce_value() -> None:
-    assert enforce_value([row(n=5)], "q") == 5
-    with pytest.raises(DatabaseResultError):
-        enforce_value([], "q")
-
-
-def test_extract_values() -> None:
-    assert extract_values([row(n=1), row(n=2)]) == [1, 2]

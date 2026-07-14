@@ -1,8 +1,10 @@
-"""Typed results, row mappers, and cardinality enforcement (§8.3, §8.4).
+"""Typed results and row mappers (§8.3, §8.4).
 
-The *fetching* of rows (``await result.fetchall()`` vs ``result.fetchall()``) lives in the
-async/sync facades. Everything here operates on already-materialized ``RowMapping`` sequences
-and is therefore pure and shared by both frontends.
+Cardinality enforcement (exactly-one / at-most-one / scalar) is *not* reimplemented here — the
+async/sync facades call SQLAlchemy's own native ``Result.one()`` / ``.one_or_none()`` /
+``.scalar_one()`` / ``.scalars().all()`` directly (see ``_async/connection.py``), which already
+provide these exact semantics. This module only covers what SQLAlchemy has no opinion on:
+mapping a row to an application type (dataclass, TypedDict, pydantic model, callable).
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from typing import Any, TypeVar
 
 from sqlalchemy import RowMapping
 
-from .errors import DatabaseMappingError, DatabaseResultError
+from .errors import DatabaseMappingError
 
 T = TypeVar("T")
 
@@ -104,55 +106,3 @@ def build_mapper(map_to: Any) -> RowMapper:
 def map_rows(rows: Sequence[RowMapping], map_to: Any) -> list[Any]:
     mapper = build_mapper(map_to)
     return [mapper(r) for r in rows]
-
-
-# --- cardinality enforcement (§8.1) ------------------------------------------------ #
-
-
-def enforce_one(rows: Sequence[RowMapping], query_name: str, map_to: Any) -> Any:
-    """Exactly one row expected."""
-    if len(rows) == 0:
-        raise DatabaseResultError(f"query {query_name!r} returned no rows, expected exactly one")
-    if len(rows) > 1:
-        raise DatabaseResultError(
-            f"query {query_name!r} returned {len(rows)} rows, expected exactly one"
-        )
-    return build_mapper(map_to)(rows[0])
-
-
-def enforce_optional(rows: Sequence[RowMapping], query_name: str, map_to: Any) -> Any | None:
-    """Zero or one row expected."""
-    if len(rows) == 0:
-        return None
-    if len(rows) > 1:
-        raise DatabaseResultError(
-            f"query {query_name!r} returned {len(rows)} rows, expected at most one"
-        )
-    return build_mapper(map_to)(rows[0])
-
-
-def enforce_value(rows: Sequence[RowMapping], query_name: str) -> Any:
-    """Exactly one row, and take its first column."""
-    if len(rows) == 0:
-        raise DatabaseResultError(
-            f"query {query_name!r} returned no rows, expected a single scalar value"
-        )
-    if len(rows) > 1:
-        raise DatabaseResultError(
-            f"query {query_name!r} returned {len(rows)} rows, expected a single scalar value"
-        )
-    row = rows[0]
-    values = list(row.values())
-    if not values:
-        raise DatabaseResultError(f"query {query_name!r} returned a row with no columns")
-    return values[0]
-
-
-def extract_values(rows: Sequence[RowMapping]) -> list[Any]:
-    """First column of every row (for ``fetch_values``)."""
-    out: list[Any] = []
-    for row in rows:
-        values = list(row.values())
-        if values:
-            out.append(values[0])
-    return out

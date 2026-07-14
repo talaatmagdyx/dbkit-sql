@@ -102,6 +102,28 @@ async def test_transaction_commit(adb: AsyncDatabase) -> None:
     assert count == 2
 
 
+async def test_transaction_isolation_read_only_deferrable(adb: AsyncDatabase) -> None:
+    async with adb.transaction(
+        target=TARGET, isolation="serializable", read_only=True, deferrable=True
+    ) as tx:
+        row = await tx.fetch_one(
+            sql(
+                "SELECT current_setting('transaction_isolation') AS iso, "
+                "current_setting('transaction_read_only') AS ro, "
+                "current_setting('transaction_deferrable') AS defer"
+            )
+        )
+    assert row["iso"] == "serializable"
+    assert row["ro"] == "on"
+    assert row["defer"] == "on"
+
+
+async def test_transaction_isolation_repeatable_read(adb: AsyncDatabase) -> None:
+    async with adb.transaction(target=TARGET, isolation="repeatable_read") as tx:
+        val = await tx.fetch_value(sql("SELECT current_setting('transaction_isolation')"))
+    assert val == "repeatable read"
+
+
 async def test_transaction_metrics_and_long_running_warning(
     base_config: dict, recording_metrics: RecordingMetrics, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -79,6 +79,22 @@ def test_sync_transaction_rollback(sdb: Database) -> None:
     assert count == 0
 
 
+def test_sync_transaction_isolation_read_only_deferrable(sdb: Database) -> None:
+    with sdb.transaction(
+        target=TARGET, isolation="serializable", read_only=True, deferrable=True
+    ) as tx:
+        row = tx.fetch_one(
+            sql(
+                "SELECT current_setting('transaction_isolation') AS iso, "
+                "current_setting('transaction_read_only') AS ro, "
+                "current_setting('transaction_deferrable') AS defer"
+            )
+        )
+    assert row["iso"] == "serializable"
+    assert row["ro"] == "on"
+    assert row["defer"] == "on"
+
+
 def test_sync_unique_violation(sdb: Database) -> None:
     sdb.execute(INSERT, {"id": 5, "email": "dup@x.com"}, target=TARGET)
     with pytest.raises(DatabaseUniqueViolationError):

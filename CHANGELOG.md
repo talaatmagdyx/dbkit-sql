@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — use SQLAlchemy's native mechanisms instead of reimplementing them
+- Cardinality enforcement (`fetch_one`/`fetch_optional`/`fetch_value`/`fetch_values`) now
+  calls SQLAlchemy's own `Result.one()` / `.one_or_none()` / `.scalar_one()` /
+  `.scalars().all()` directly instead of fetching all rows and enforcing exactly-one/
+  at-most-one/scalar semantics by hand; `NoResultFound`/`MultipleResultsFound` are translated
+  to the existing `DatabaseResultError`. `_core/result.py` no longer reimplements this — it
+  only maps rows to application types, which SQLAlchemy has no opinion on.
+- `db.transaction(isolation=..., read_only=..., deferrable=...)` now uses
+  `AsyncConnection.execution_options(isolation_level=..., postgresql_readonly=...,
+  postgresql_deferrable=...)` instead of raw `SET TRANSACTION ...` SQL, applied *before*
+  `BEGIN` (execution options configure the driver connection itself). Added a `deferrable`
+  parameter — only meaningful with `isolation="serializable", read_only=True`, letting a
+  read-only serializable transaction wait for a safe snapshot instead of risking a
+  serialization failure. `statement_timeout`/`lock_timeout` still use `SET LOCAL` (no
+  portable execution_option exists for PostgreSQL GUCs).
+- Commit-unknown detection (`_is_connection_error`) now prefers SQLAlchemy's own
+  `DBAPIError.connection_invalidated` flag (each dialect's own `is_disconnect()` logic) over a
+  blanket `isinstance(exc, (InterfaceError, OperationalError))` check — `OperationalError`
+  also covers transient-but-not-disconnected conditions (e.g. some lock/resource errors),
+  which would otherwise over-classify ordinary failures as commit-unknown.
+
 ### Added — unnest() bulk strategy, psycopg pipeline mode, PgBouncer-compatible mode
 - `strategy="unnest"` on `insert_many`/`upsert_many` (`postgres/unnest.py`): one array-per-
   column bind instead of one bind per column per row, so batch size isn't limited by

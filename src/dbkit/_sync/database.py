@@ -556,10 +556,15 @@ class Database:
         target: DatabaseTarget,
         isolation: str | None = None,
         read_only: bool = False,
+        deferrable: bool = False,
         timeout: float | None = None,
         lock_timeout: float | None = None,
     ) -> Iterator[Any]:
         """An explicit transaction with isolation/timeout options (§11.3).
+
+        ``deferrable`` (PostgreSQL only) is only meaningful together with
+        ``isolation="serializable"`` and ``read_only=True``: it lets a read-only serializable
+        transaction wait for a safe snapshot instead of risking a serialization failure.
 
         Usage::
 
@@ -586,6 +591,7 @@ class Database:
                 role=entry.key.role,
                 isolation=isolation,
                 read_only=read_only,
+                deferrable=deferrable,
                 timeout=timeout,
                 lock_timeout=lock_timeout,
                 query_name="transaction",

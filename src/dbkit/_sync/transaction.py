@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy import Connection, Engine
 
 from .._core.errors import (
@@ -67,10 +67,16 @@ class TransactionScope(ConnectionScope):
 
 
 def _is_connection_error(exc: BaseException) -> bool:
-    if isinstance(exc, (InterfaceError, OperationalError)):
-        return True
+    """Whether ``exc`` indicates the connection itself is broken, not just a query failure (§15).
+
+    Prefers SQLAlchemy's own per-dialect disconnect detection (``connection_invalidated``,
+    computed by each dialect's ``is_disconnect()`` when it wraps the driver exception) over a
+    blanket ``OperationalError`` check — ``OperationalError`` also covers many transient-but-
+    not-disconnected conditions (e.g. some lock/resource errors), which would otherwise
+    over-classify ordinary failures as commit-unknown.
+    """
     if isinstance(exc, DBAPIError):
-        return bool(getattr(exc, "connection_invalidated", False))
+        return exc.connection_invalidated
     return isinstance(exc, (ConnectionError, OSError))
 
 
@@ -95,6 +101,7 @@ class _TransactionManager:
         labels: dict[str, str] | None = None,
         long_transaction_warning_seconds: float = 5.0,
         span: Any = None,
+        deferrable: bool = False,
     ) -> None:
         self._engine = engine
         self._is_postgres = is_postgres
@@ -104,6 +111,7 @@ class _TransactionManager:
         self._role = role
         self._isolation = isolation
         self._read_only = read_only
+        self._deferrable = deferrable
         self._timeout = timeout if timeout is not None else default_timeout
         self._lock_timeout = lock_timeout
         self._query_name = query_name
@@ -119,6 +127,13 @@ class _TransactionManager:
     def __enter__(self) -> TransactionScope:
         try:
             self._conn = self._engine.connect()
+            # Isolation level / read-only / deferrable must be set *before* BEGIN — SQLAlchemy's
+            # execution_options() applies them via the driver's native connection attributes
+            # where possible (e.g. psycopg's own .isolation_level/.read_only), not raw SQL
+            # (§11.5). isolation_level is dialect-portable; the postgresql_* options are PG-only.
+            opts = self._execution_options()
+            if opts:
+                self._conn = self._conn.execution_options(**opts)
             self._trans = self._conn.begin()
             self._apply_settings(self._conn)
         except BaseException as exc:
@@ -139,14 +154,23 @@ class _TransactionManager:
         )
         return self._scope
 
+    def _execution_options(self) -> dict[str, Any]:
+        opts: dict[str, Any] = {}
+        if self._isolation:
+            opts["isolation_level"] = self._isolation.upper().replace("_", " ")
+        if self._is_postgres:
+            if self._read_only:
+                opts["postgresql_readonly"] = True
+            if self._deferrable:
+                opts["postgresql_deferrable"] = True
+        return opts
+
     def _apply_settings(self, conn: Connection) -> None:
+        # Statement/lock timeout are PostgreSQL GUCs with no portable execution_option — they
+        # have no driver-native equivalent, so SET LOCAL is the only option (§10, §12.1). Must
+        # run after BEGIN: SET LOCAL only takes effect inside an open transaction.
         if not self._is_postgres:
             return
-        if self._isolation:
-            level = self._isolation.upper().replace("_", " ")
-            conn.execute(text(f"SET TRANSACTION ISOLATION LEVEL {level}"))
-        if self._read_only:
-            conn.execute(text("SET TRANSACTION READ ONLY"))
         stmt = apply_statement_timeout_sql(self._timeout)
         if stmt is not None:
             conn.execute(text(stmt))
