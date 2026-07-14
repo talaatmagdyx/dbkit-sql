@@ -136,6 +136,32 @@ async def test_evicted_engines_dont_corrupt_a_connection_already_checked_out(
     await registry.dispose_all()
 
 
+async def test_drain_engine_forces_a_fresh_engine_on_next_use(base_config: dict) -> None:
+    """``drain_engine`` (§7, the CLI-gap finding) disposes one named engine so the next call
+    routed to it rebuilds fresh connections — the pattern for forcing traffic onto a new
+    backend right before a planned failover, without waiting for pool recycling."""
+    dsn = base_config["databases"]["app"]["primary"]["url"]
+    db = AsyncDatabase.from_config({"databases": {"app": {"primary": {"url": dsn}}}})
+    await db.start()
+    try:
+        await db.fetch_value(sql("SELECT 1"), target=WRITE)
+        keys_before = {s.key for s in db.pool_status()}
+        assert len(keys_before) == 1
+        (key,) = keys_before
+
+        assert await db.drain_engine(key) is True
+        assert db.pool_status() == []  # the engine is gone until next use
+
+        assert await db.drain_engine(key) is False  # already gone, nothing to drain
+
+        # The next call transparently rebuilds a fresh engine under the same key.
+        await db.fetch_value(sql("SELECT 1"), target=WRITE)
+        keys_after = {s.key for s in db.pool_status()}
+        assert keys_after == keys_before
+    finally:
+        await db.close()
+
+
 async def test_hash_shard_resolver_routes_deterministically(base_config: dict) -> None:
     dsn = base_config["databases"]["app"]["primary"]["url"]
     resolver = HashShardResolver(4)

@@ -488,6 +488,26 @@ class Database:
         """A point-in-time snapshot of every currently live engine's connection pool."""
         return self._registry.snapshots()
 
+    def drain_engine(self, key: str) -> bool:
+        """Force-dispose one engine's idle pooled connections by its snapshot ``key`` (as printed
+        by :meth:`pool_status`, e.g. ``"prod:app:default:primary:psycopg"``), so the *next* call
+        routed to it rebuilds a fresh engine with fresh connections. Returns ``False`` if no live
+        engine currently has that key.
+
+        Useful right before a planned failover/topology change: rather than waiting for
+        connections to naturally recycle (``PoolConfig.recycle_seconds``), force them closed so
+        subsequent traffic reaches the new backend immediately. Only idle pooled connections are
+        closed — one already checked out by an in-flight call keeps working until released,
+        exactly like LRU eviction (`EngineRegistry(evict_lru=True)`).
+
+        This must be called from *within the running application process* — there is no
+        ``dbkit`` CLI command for this, deliberately: each CLI invocation is a fresh, separate
+        process with its own empty engine registry, so it has no way to reach into an
+        already-running application's live engines. Wire this to a signal handler or an admin
+        HTTP route in your own application instead (see ``docs/troubleshooting.md``).
+        """
+        return self._registry.dispose_one(key)
+
     # -- streaming ---------------------------------------------------------------- #
 
     def stream(

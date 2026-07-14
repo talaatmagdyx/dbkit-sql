@@ -72,7 +72,30 @@ duplicate-row failure mode this guards against.
   PostgreSQL's `max_connections` even when each individual pool looks small.
   **Fix:** run `dbkit connection-budget config.yaml --replicas N` (N = your pod/replica count)
   *before* a rollout, and set `ConnectionBudgetConfig.enforce_at_startup=True` so a
-  misconfiguration fails fast at startup instead of under load.
+  misconfiguration fails fast at startup instead of under load. `dbkit check`/`config-validate`
+  now also print a `[WARNING]` line whenever `environment != "development"` and no budget is
+  configured, or one is configured but `enforce_at_startup=False` — the same warning covers
+  per-database budgets, not just the process-wide one.
+
+- **Symptom:** `dbkit check`/`config-validate` prints `[WARNING] ... DSN has no explicit
+  sslmode/ssl parameter`.
+  **Cause:** the target's URL has no `sslmode`/`ssl` query parameter at all — dbkit never
+  enforces TLS itself, but flags a DSN that doesn't even state its intent outside development.
+  **Fix:** add an explicit `?sslmode=require` (or stricter) to the DSN; this warning is purely
+  informational and never fails the command, so it's safe to leave in place temporarily while
+  you plan the change.
+
+## The `.raw` escape hatch bypasses error handling
+
+- **Symptom:** a query run via `tx.raw`/`conn.raw` raises a raw driver exception (e.g. a bare
+  `psycopg.errors.*`) instead of a `DatabaseError` subclass, and your `except DatabaseError`
+  handler doesn't catch it.
+  **Cause:** `.raw` is an explicit escape hatch to the underlying SQLAlchemy connection — by
+  design, anything run through it skips classification, metrics, tracing, and retry/circuit-
+  breaker handling entirely (see `docs/api/database.md`).
+  **Fix:** use the normal `db.execute`/`fetch_*`/`stream`/bulk methods instead, unless you
+  specifically need one of the two documented raw-driver escape hatches (`tx.pipeline()`,
+  `db.copy_records()`), or intend to own error handling yourself for that statement.
 
 ## PgBouncer
 
@@ -84,6 +107,14 @@ duplicate-row failure mode this guards against.
   backend.
   **Fix:** set `PoolConfig.pgbouncer_compatible=True`, which disables that autoprep. Verify with
   `dbkit pools` or by checking `raw.driver_connection.prepare_threshold is None` after startup.
+
+- **Concern:** "does disabling autoprep for PgBouncer compatibility cost meaningful latency?"
+  **Measured** (`benchmarks/bench_pgbouncer_compatible.py`, paced small reads, repeated on one
+  connection, localhost): p50 latency with `pgbouncer_compatible=True` vs `False` differed by
+  well under a tenth of a millisecond across repeated runs (e.g. +0.01ms to -0.05ms) — noise-level
+  on a sub-millisecond query, not a meaningful cost. This measures the client-side autoprep-off
+  cost directly (the setting only changes driver behavior); it does not model actual PgBouncer
+  connection-routing overhead, which depends on your specific PgBouncer deployment.
 
 ## asyncpg-specific
 
@@ -126,3 +157,18 @@ duplicate-row failure mode this guards against.
   **Fix:** check `db_circuit_breaker_state` (0=closed/1=half_open/2=open,
   `docs/observability.md`) and the underlying infra issue; the breaker will move to half-open
   and probe again after `open_seconds` on its own — no manual reset needed.
+
+## Forcing fresh connections before a planned failover
+
+- **Need:** before a planned topology change (e.g. promoting a new primary), force a specific
+  engine's pooled connections closed so the *next* call rebuilds fresh ones immediately, rather
+  than waiting for `PoolConfig.recycle_seconds` to naturally cycle them out.
+  **Fix:** call `await db.drain_engine(key)` (both frontends), where `key` is the string printed
+  by `db.pool_status()`/`dbkit pools` (e.g. `"prod:app:default:primary:psycopg"`). Only idle
+  pooled connections are closed — one already checked out by an in-flight call keeps working
+  until released, the same guarantee `evict_lru` relies on.
+  **There is deliberately no `dbkit` CLI command for this.** Each CLI invocation is a fresh,
+  separate process with an empty engine registry of its own — it cannot reach into an
+  already-running application's live engines. Call `drain_engine()` from *within* the running
+  process instead: wire it to a `SIGHUP` handler, an admin HTTP route, or whatever your
+  deployment already uses to trigger operational actions on a live instance.

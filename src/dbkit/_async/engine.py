@@ -205,3 +205,21 @@ class AsyncEngineRegistry:
             self._entries.clear()
         for entry in entries:
             await entry.engine.dispose()
+
+    async def dispose_one(self, key: str) -> bool:
+        """Dispose one engine by its snapshot key (e.g. ``"env:database:shard:role:driver"``, as
+        printed by :meth:`snapshots`/``dbkit pools``), forcing subsequent calls to rebuild it
+        with fresh connections. Returns ``False`` if no live engine has that key.
+
+        Only closes idle pooled connections, exactly like the LRU-eviction path
+        (:meth:`_evict_lru_locked`) — a connection already checked out by another in-flight
+        coroutine keeps working until the caller releases it (verified by the same regression
+        test covering LRU eviction under concurrent use).
+        """
+        async with self._lock:
+            entry = self._entries.pop(key, None)
+        if entry is None:
+            return False
+        await entry.engine.dispose()
+        self._metrics.incr(m.CONN_CLOSED, labels=entry.labels)
+        return True

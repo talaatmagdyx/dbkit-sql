@@ -35,6 +35,11 @@ def _load_config(config_path: Path) -> DbkitConfig:
         raise typer.Exit(code=1) from exc
 
 
+def _print_operational_warnings(config: DbkitConfig) -> None:
+    for warning in (*config.budget_enforcement_warnings(), *config.tls_warnings()):
+        typer.echo(f"  [WARNING] {warning}")
+
+
 def _run(coro: Awaitable[T]) -> T:
     try:
         return asyncio.run(coro)  # type: ignore[arg-type]
@@ -52,6 +57,7 @@ def check(
     typer.echo(
         f"configuration OK: {len(config.databases)} database(s), environment={config.environment!r}"
     )
+    _print_operational_warnings(config)
 
     async def _go() -> bool:
         db = AsyncDatabase.from_config(config)
@@ -149,6 +155,7 @@ def config_validate(
         for r in db.replicas:
             typer.echo(f"  {name}.replica:{r.name}: {r.url}")
     typer.echo("configuration is valid")
+    _print_operational_warnings(config)
 
 
 @app.command("connection-budget")
@@ -166,6 +173,50 @@ def connection_budget(
     if limit is not None:
         status = "OK" if report["per_process"] <= limit else "EXCEEDS budget"
         typer.echo(f"configured per-process budget: {limit} ({status})")
+
+
+@app.command()
+def metrics(
+    config_path: Path = typer.Argument(..., help="Path to a dbkit YAML config file."),
+) -> None:
+    """Run one health probe and print the resulting metric values, Prometheus text format.
+
+    Requires the ``prometheus`` extra. This is a wiring smoke test, not a live incident-triage
+    snapshot: this command is a fresh process with its own metrics registry, so it can only show
+    what *this command's own probe* recorded (pool gauges, one operation/duration observation per
+    target) — it has no way to read an already-running application's accumulated counters. Point
+    your real Prometheus scraper at the running application's own metrics endpoint for that; use
+    this command to sanity-check metric names/labels before wiring up dashboards/alerts (see
+    ``docs/observability.md``).
+    """
+    try:
+        from prometheus_client import CollectorRegistry, generate_latest
+    except ImportError as exc:
+        typer.echo("the `prometheus` extra is required: pip install dbkit[prometheus]", err=True)
+        raise typer.Exit(code=1) from exc
+
+    from .._core.query import Query, sql
+    from .._core.routing import DatabaseTarget
+    from ..observability.prometheus import PrometheusMetrics
+
+    config = _load_config(config_path)
+    registry = CollectorRegistry()
+    sink = PrometheusMetrics(namespace="dbkit", registry=registry)
+    probe = Query(name="dbkit.cli.metrics_probe", statement=sql("SELECT 1"))
+
+    async def _go() -> None:
+        db = AsyncDatabase.from_config(config, metrics=sink)
+        await db.start(warm=True)
+        try:
+            for name, target_config in config.databases.items():
+                if target_config.primary.required:
+                    await db.fetch_value(probe, target=DatabaseTarget(database=name, role="write"))
+            db.pool_status()  # samples pool gauges — otherwise-lazy, see _pool.py
+        finally:
+            await db.close()
+
+    _run(_go())
+    typer.echo(generate_latest(registry).decode())
 
 
 @app.command("query-list")

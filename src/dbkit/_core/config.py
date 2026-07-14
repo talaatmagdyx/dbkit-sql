@@ -13,7 +13,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from .errors import DatabaseConfigurationError
 from .errors.redaction import redact_dsn
@@ -223,6 +223,16 @@ class TargetConfig:
         """SQL dialect parsed from the URL, e.g. ``postgresql``."""
         return urlsplit(self.url).scheme.split("+", 1)[0]
 
+    @property
+    def has_explicit_tls_setting(self) -> bool:
+        """Whether the URL's query string sets an explicit ``sslmode``/``ssl`` parameter.
+
+        dbkit does not enforce TLS itself (that's the driver/infrastructure's job) — this only
+        answers whether the DSN is explicit about its intent, for the ``dbkit check`` warning.
+        """
+        query = parse_qs(urlsplit(self.url).query)
+        return "sslmode" in query or "ssl" in query
+
     def validate(self) -> None:
         """Raise :class:`DatabaseConfigurationError` if the URL is missing or malformed."""
         if not self.url:
@@ -374,6 +384,59 @@ class DbkitConfig:
                 f"connection budget exceeded: configured pools allow up to {actual} "
                 f"connections per process but the budget is {limit}"
             )
+
+    # -- operational warnings (informational only — never raise) ------------------ #
+
+    def budget_enforcement_warnings(self) -> list[str]:
+        """Non-fatal warnings (§10.3) about unenforced connection budgets.
+
+        Always empty when ``environment == "development"`` — a local/dev process silently
+        exceeding a budget is not the scenario this guards against. Outside development, an
+        unconfigured or unenforced budget means a config change (e.g. a new shard) can silently
+        push a fleet's total connections past PostgreSQL's ``max_connections`` with nothing
+        failing until the database itself starts rejecting connections under load.
+        """
+        if self.environment == "development":
+            return []
+        warnings: list[str] = []
+        if self.connection_budget.maximum_per_process is None:
+            warnings.append(
+                f"no process-wide connection budget configured (environment={self.environment!r}) "
+                "— set connection_budget.maximum_per_process and enforce_at_startup=true, or "
+                "run `dbkit connection-budget` to size one"
+            )
+        elif not self.connection_budget.enforce_at_startup:
+            warnings.append(
+                "connection_budget.maximum_per_process is set but enforce_at_startup=false — "
+                "the budget is reported, not enforced"
+            )
+        for name, db in self.databases.items():
+            if db.connection_budget.maximum_per_process is not None and (
+                not db.connection_budget.enforce_at_startup
+            ):
+                warnings.append(
+                    f"database {name!r}: connection budget configured but enforce_at_startup=false"
+                )
+        return warnings
+
+    def tls_warnings(self) -> list[str]:
+        """Non-fatal warnings (§29) about DSNs with no explicit TLS posture.
+
+        dbkit delegates TLS entirely to the driver/DSN and never enforces it — this only flags,
+        outside development, a target whose URL doesn't even state its intent (no ``sslmode``/
+        ``ssl`` query parameter), which is a cheap, common misconfiguration to catch early.
+        """
+        if self.environment == "development":
+            return []
+        warnings = []
+        for name, db in self.databases.items():
+            for target in db.all_targets():
+                if not target.has_explicit_tls_setting:
+                    warnings.append(
+                        f"{name}.{target.name}: DSN has no explicit sslmode/ssl parameter "
+                        f"(environment={self.environment!r})"
+                    )
+        return warnings
 
     # -- redaction ---------------------------------------------------------------- #
 

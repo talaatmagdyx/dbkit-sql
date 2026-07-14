@@ -101,12 +101,20 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
   tenant/shard access control is the calling application's responsibility.
 - Per-database connection budgets (`DatabaseConfig.enforce_connection_budget`): a single
   database can fail startup on its own budget, independent of the global one.
+- `AsyncEngineRegistry.dispose_one()` / `AsyncDatabase.drain_engine()` (`Database.drain_engine()`
+  on the sync side): force-dispose one named engine's idle connections ahead of a planned
+  failover, without waiting for `PoolConfig.recycle_seconds` — a library method, not a CLI
+  command, since only the running application process holds the live registry to act on.
 
 ## Phase 5 — Production hardening & OSS release ✅ (delivered)
 
 - CLI (`dbkit` console script / `dbkit.cli.main`): `check`, `health`, `pools`, `engines`,
-  `config-validate`, `connection-budget`, `query-list` — secret-redacted output, classified
-  errors instead of tracebacks, non-zero exit on failure.
+  `config-validate`, `connection-budget`, `query-list`, `metrics` — secret-redacted output,
+  classified errors instead of tracebacks, non-zero exit on failure. `check`/`config-validate`
+  also warn (never fail) when a non-development environment has no enforced connection budget or
+  a DSN with no explicit TLS parameter. `metrics` (requires the `prometheus` extra) is a wiring
+  smoke test — one probe's worth of Prometheus output — not a live incident-triage snapshot,
+  since a CLI invocation can't reach an already-running process's accumulated counters.
 - Docs site (`mkdocs.yml` + `docs/`, mkdocs-material): builds clean under `--strict`.
 - PyPI release readiness: `python -m build` + `twine check` verified against a real build
   (installed the built wheel into a clean venv and smoke-tested it); `.github/workflows/

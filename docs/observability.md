@@ -23,6 +23,21 @@ no additional prefix is added.
 | `db_circuit_breaker_state` | gauge, 0/1/2 | Per-target breaker state: closed/half_open/open |
 | `db_stream_rows_total` / `db_bulk_rows_total` | counters | Streaming/bulk throughput |
 
+## Verifying your metrics wiring: `dbkit metrics`
+
+`dbkit metrics config.yaml` (requires the `prometheus` extra) runs one health probe against
+every required database and prints the resulting values in Prometheus text format — a quick way
+to confirm metric names/labels look right *before* wiring up the dashboard/alerts above.
+
+**This is a wiring smoke test, not a live incident-triage snapshot.** Each `dbkit` CLI
+invocation is a fresh, separate process with its own empty metrics registry — it has no way to
+read an already-running application's accumulated counters (there's no admin channel between a
+one-shot CLI process and a long-running app process). For real incident triage, point your
+Prometheus scraper at the running application's own metrics endpoint, the way you already do for
+every other service. The same limitation is why there's no CLI command to force-drain a live
+engine either — see `AsyncDatabase.drain_engine()` / `docs/troubleshooting.md` for the
+in-process equivalent, callable from your own admin endpoint or signal handler.
+
 ## Example Grafana dashboard
 
 Import this JSON directly (Dashboards → New → Import → paste JSON), then point it at your

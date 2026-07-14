@@ -200,3 +200,91 @@ def test_insert_strategy_type_accepts_unnest() -> None:
 
     strategy: InsertStrategy = "unnest"
     assert strategy == "unnest"
+
+
+def test_budget_warnings_silent_in_development() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "environment": "development",
+            "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+        }
+    )
+    assert cfg.budget_enforcement_warnings() == []
+
+
+def test_budget_warnings_flag_unconfigured_budget_outside_development() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "environment": "production",
+            "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+        }
+    )
+    warnings = cfg.budget_enforcement_warnings()
+    assert len(warnings) == 1
+    assert "no process-wide connection budget configured" in warnings[0]
+
+
+def test_budget_warnings_flag_configured_but_unenforced_budget() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "environment": "production",
+            "connection_budget": {"maximum_per_process": 50},
+            "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+        }
+    )
+    warnings = cfg.budget_enforcement_warnings()
+    assert len(warnings) == 1
+    assert "enforce_at_startup=false" in warnings[0]
+
+
+def test_budget_warnings_silent_when_enforced() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "environment": "production",
+            "connection_budget": {"maximum_per_process": 50, "enforce_at_startup": True},
+            "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+        }
+    )
+    assert cfg.budget_enforcement_warnings() == []
+
+
+def test_tls_warnings_silent_in_development() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "environment": "development",
+            "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+        }
+    )
+    assert cfg.tls_warnings() == []
+
+
+def test_tls_warnings_flag_dsn_with_no_explicit_setting() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "environment": "production",
+            "databases": {
+                "app": {
+                    "primary": {"url": "postgresql+psycopg://h/app"},
+                    "replicas": [
+                        {"name": "r1", "url": "postgresql+psycopg://r/app?sslmode=require"}
+                    ],
+                }
+            },
+        }
+    )
+    warnings = cfg.tls_warnings()
+    assert warnings == [
+        "app.primary: DSN has no explicit sslmode/ssl parameter (environment='production')"
+    ]
+
+
+def test_tls_warnings_silent_when_sslmode_present() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "environment": "production",
+            "databases": {
+                "app": {"primary": {"url": "postgresql+psycopg://h/app?sslmode=require"}},
+            },
+        }
+    )
+    assert cfg.tls_warnings() == []

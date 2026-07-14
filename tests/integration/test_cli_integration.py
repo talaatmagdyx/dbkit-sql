@@ -41,6 +41,15 @@ def test_pools_against_real_database(config_file) -> None:
     assert "checked_out=" in result.output
 
 
+def test_metrics_against_real_database(config_file) -> None:
+    pytest.importorskip("prometheus_client")
+    result = runner.invoke(app, ["metrics", str(config_file)])
+    assert result.exit_code == 0
+    assert "db_operation_total" in result.output
+    assert "db_pool_size" in result.output
+    assert 'query_name="dbkit.cli.metrics_probe"' in result.output
+
+
 def test_health_against_unreachable_database(tmp_path) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(

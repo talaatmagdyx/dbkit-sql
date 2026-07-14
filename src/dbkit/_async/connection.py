@@ -167,7 +167,17 @@ class AsyncConnectionScope:
 
     @property
     def raw(self) -> AsyncConnection:
-        """The underlying SQLAlchemy connection (escape hatch, §7.3)."""
+        """The underlying SQLAlchemy connection — an explicit "you now own error handling"
+        escape hatch (§7.3).
+
+        Anything executed via ``.raw`` bypasses dbkit entirely: no error classification (you'll
+        see raw driver/SQLAlchemy exceptions, not :class:`~dbkit.errors.DatabaseError`
+        subclasses — an ``except DatabaseError`` handler will not catch them), no metrics, no
+        tracing, and no retry/circuit-breaker/commit-unknown handling. Use it only for the two
+        things dbkit doesn't itself implement (:meth:`pipeline`, :meth:`~dbkit.AsyncDatabase.
+        copy_records`'s underlying driver connection) or a genuine one-off that needs raw driver
+        access — not as a routine way to run queries.
+        """
         return self._conn
 
     def pipeline(self) -> contextlib.AbstractAsyncContextManager[None]:

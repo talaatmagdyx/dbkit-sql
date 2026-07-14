@@ -111,6 +111,44 @@ def test_query_list_warns_on_unguarded_idempotent_insert() -> None:
     assert "verify this write is actually safe to run twice" in result.output
 
 
+def test_config_validate_warns_on_unenforced_budget_and_missing_tls(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+        environment: production
+        databases:
+          app:
+            primary:
+              url: postgresql+psycopg://localhost/app
+        connection_budget:
+          maximum_per_process: 50
+        """
+    )
+    result = runner.invoke(app, ["config-validate", str(path)])
+    assert result.exit_code == 0
+    assert (
+        "[WARNING] connection_budget.maximum_per_process is set but enforce_at_startup=false"
+        in (result.output)
+    )
+    assert "[WARNING] app.primary: DSN has no explicit sslmode/ssl parameter" in result.output
+
+
+def test_config_validate_silent_in_development(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+        environment: development
+        databases:
+          app:
+            primary:
+              url: postgresql+psycopg://localhost/app
+        """
+    )
+    result = runner.invoke(app, ["config-validate", str(path)])
+    assert result.exit_code == 0
+    assert "WARNING" not in result.output
+
+
 def test_query_list_does_not_warn_on_guarded_insert() -> None:
     from dbkit._core.query import Query, default_registry, sql
 

@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — closing every remaining production-readiness review finding
+- **`dbkit metrics`** (new CLI command, requires the `prometheus` extra): runs one health probe
+  and prints the resulting metric values in Prometheus text format. Documented as a wiring
+  smoke test, not a live incident-triage snapshot — a CLI invocation is a fresh process with an
+  empty metrics registry, so it cannot read an already-running application's live counters.
+- **`AsyncDatabase.drain_engine(key)` / `Database.drain_engine(key)`** (new, both frontends):
+  force-disposes one named engine's idle pooled connections by its `pool_status()` key, so the
+  next call routed to it rebuilds fresh connections — useful right before a planned failover.
+  Deliberately not exposed as a CLI command (same live-process-boundary reasoning as `dbkit
+  metrics`); call it from your own admin endpoint or signal handler instead.
+- **`DbkitConfig.budget_enforcement_warnings()` / `tls_warnings()`** (new): `dbkit check`/
+  `config-validate` now print a `[WARNING]` when `environment != "development"` and either no
+  connection budget is configured/enforced, or a target's DSN has no explicit `sslmode`/`ssl`
+  parameter. Purely informational — never fails the command, and the enforcement defaults
+  themselves are unchanged.
+- **`examples/streaming_checkpoint_resume.py`**: a keyset-checkpoint (`WHERE id > :last_id ORDER
+  BY id`) resume pattern for `db.stream()`, run against real PostgreSQL with a simulated
+  mid-stream crash — the next attempt resumes from the last durable checkpoint, not from
+  scratch, while being explicit about the reprocessing window checkpoint granularity implies.
+- **`benchmarks/bench_pool_exhaustion.py`**: verifies that demand beyond `pool.size +
+  max_overflow` fails fast with a classified `DatabasePoolTimeoutError`, not a hang.
+- **`benchmarks/bench_pgbouncer_compatible.py`**: measures the latency cost of
+  `pgbouncer_compatible=True` (disabling driver autoprep) — noise-level on a sub-millisecond
+  query in this benchmark's runs.
+- **`.raw` escape hatch**: docstring and `docs/api/database.md` now state plainly that using it
+  opts a statement out of classification/metrics/tracing/retry entirely.
+- The CLI's `dbkit metrics`/lack of a `drain-engine` command/lack of a slow-query-log command are
+  now each explicitly reasoned about in `docs/observability.md`/`docs/troubleshooting.md` rather
+  than left as unexplained gaps — the CLI is architecturally a fresh, separate process per
+  invocation with no channel into an already-running application's live state.
+
 ### Added — "before stable 1.0" production-readiness review items
 - **Idempotent-write guard rail** (`_core/idempotency_lint.py`): `dbkit query-list` now warns
   on registered writes marked `idempotent=True` whose SQL text has no visible `ON CONFLICT`/

@@ -59,6 +59,15 @@ and driver (psycopg/asyncpg each have their own `sslmode`/`ssl` parameters). Mak
 production DSNs specify an explicit `sslmode=require` (or stricter, e.g. `verify-full`) rather
 than relying on a driver default, which can vary by version and environment.
 
+`dbkit check`/`config-validate` add one cheap, non-enforcing check for this: when
+`environment != "development"`, any target URL with no `sslmode`/`ssl` query parameter at all
+prints a `[WARNING]` line. This only catches "TLS posture was never even stated" — it does not
+verify the value is strict enough, and it never fails the command; a warning is the whole
+guarantee. The same commands also warn when a non-development environment has no connection
+budget configured, or has one configured but not enforced at startup (`DbkitConfig.
+budget_enforcement_warnings()` / `tls_warnings()`) — see `docs/troubleshooting.md` for what to do
+about either warning.
+
 ## No cross-shard transactions
 
 Each `DatabaseTarget` resolves to exactly one shard; dbkit has no distributed-transaction/2PC
