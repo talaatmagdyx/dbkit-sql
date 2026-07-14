@@ -178,3 +178,25 @@ def test_from_yaml(tmp_path) -> None:
     )
     cfg = DbkitConfig.from_yaml(str(p))
     assert cfg.environment == "prod"
+
+
+def test_pgbouncer_compatible_default_off() -> None:
+    cfg = DbkitConfig.from_dict(BASE)
+    assert cfg.defaults.pool.pgbouncer_compatible is False
+
+
+def test_pgbouncer_compatible_round_trip() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "defaults": {"pool": {"pgbouncer_compatible": True}},
+            "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+        }
+    )
+    assert cfg.defaults.pool.pgbouncer_compatible is True
+
+
+def test_insert_strategy_type_accepts_unnest() -> None:
+    from dbkit._core.bulk import InsertStrategy
+
+    strategy: InsertStrategy = "unnest"
+    assert strategy == "unnest"

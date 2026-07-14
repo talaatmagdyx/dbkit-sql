@@ -76,6 +76,28 @@ async def main() -> None:
         )
         count = await db.fetch_value(sql("SELECT count(*) FROM dbkit_bulk_users"), target=TARGET)
         print(f"split_on_failure: wrote {result3.row_count} rows, {count} persisted (expect 50)")
+
+        # 5. strategy="unnest": one array-per-column bind instead of one bind per column per
+        #    row, so batch size isn't limited by the 65535 bind-parameter ceiling — a mid-tier
+        #    option between execute_many and COPY, PostgreSQL only.
+        await db.execute(sql("TRUNCATE dbkit_bulk_users"), target=TARGET)
+        big_batch = [{"id": i, "email": f"n{i}@example.com"} for i in range(20000)]
+        result4 = await db.insert_many(
+            users, big_batch, target=TARGET, strategy="unnest", batch_size=20000
+        )
+        print(
+            f"unnest insert_many: wrote {result4.row_count} rows in one statement "
+            f"({result4.duration_ms:.1f}ms)"
+        )
+        result5 = await db.upsert_many(
+            users,
+            [{"id": i, "email": "updated"} for i in range(19900, 20100)],
+            target=TARGET,
+            conflict_index_elements=["id"],
+            update_columns=["email"],
+            strategy="unnest",
+        )
+        print(f"unnest upsert_many: touched {result5.row_count} rows")
     finally:
         await db.close()
 

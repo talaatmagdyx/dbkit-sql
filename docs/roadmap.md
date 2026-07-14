@@ -48,10 +48,20 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
 - PostgreSQL `COPY` (`db.copy_records`) via the psycopg raw-driver escape hatch — ~90× faster
   than per-row inserts in-benchmark; bounded memory.
 - Consumer integration (`dbkit.integrations`): inbox dedup + `process_once` + `ack_after_commit`
-  (§28 exactly-once flow) and `BatchCollector` micro-batching.
-
-Remaining for a later pass: psycopg pipeline mode, `unnest()` array-insert strategy, a
-first-class Celery/RabbitMQ subscriber adapter.
+  (§28 exactly-once flow) and `BatchCollector` micro-batching. These are the DB-side primitives
+  a message consumer needs; dbkit is scoped as **database-only** and deliberately does not ship
+  a broker-facing adapter (no RabbitMQ/Celery client dependency) — an application wires these
+  primitives into its own consumer loop.
+- `unnest()` bulk strategy (`postgres/unnest.py`, `strategy="unnest"` on `insert_many`/
+  `upsert_many`): one array-per-column bind instead of one bind per column per row, so batch
+  size isn't limited by the 65535 bind-parameter ceiling — ~32× faster than `execute_many` at
+  20k rows in-benchmark. PostgreSQL only; each column cast with `CAST(:name AS type[])`
+  (`:name::type[]` is silently left unparsed by SQLAlchemy's `text()`).
+- psycopg pipeline mode (`postgres/pipeline.py`, `tx.pipeline()`): batches dependent statements
+  into one round trip without waiting for each response — mirrors the COPY escape-hatch
+  pattern (raw driver connection via `get_raw_connection()`/`driver_connection`). The benefit
+  is amortizing network round-trip latency; it shows no speedup on localhost, only over a real
+  network hop.
 
 ## Phase 4 — Multi-database & sharding ✅ (delivered)
 
@@ -80,7 +90,11 @@ first-class Celery/RabbitMQ subscriber adapter.
   release.yml` (tag-triggered, PyPI trusted publishing via OIDC, not yet used for a release).
 - Failure-injection/load/soak suites and the benchmark harness were delivered alongside
   Phases 1–3 (see `docs/testing.md`).
+- PgBouncer-compatible pooling mode (`PoolConfig.pgbouncer_compatible`): disables driver-side
+  autoprepare (psycopg's `prepare_threshold`, asyncpg's `statement_cache_size`) — required
+  correctness fix under PgBouncer's *transaction* pooling, where a connection may hit a
+  different physical backend each transaction. Every session setting was already scoped with
+  `SET LOCAL`/per-transaction, never a bare session-level `SET`, so no other change was needed.
 
-Remaining stretch items (not blocking, tracked for a later pass): psycopg pipeline mode /
-`unnest()` bulk strategy / a first-class RabbitMQ or Celery subscriber adapter (Phase 3), and
-a PgBouncer-compatible pooling mode.
+No further stretch items remain from the original spec. dbkit is intentionally scoped as a
+database-only toolkit — no broker/message-queue adapter is planned.

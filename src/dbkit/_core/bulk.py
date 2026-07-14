@@ -15,6 +15,9 @@ from typing import Any, Literal
 PG_MAX_BIND_PARAMS = 65535
 
 FailureMode = Literal["atomic", "best_effort", "split_on_failure"]
+#: "execute_many" binds N params/row (SQLAlchemy's own multi-row translation, any dialect).
+#: "unnest" binds one array param per column regardless of row count (PostgreSQL only, §19).
+InsertStrategy = Literal["execute_many", "unnest"]
 
 
 @dataclass(frozen=True, slots=True)

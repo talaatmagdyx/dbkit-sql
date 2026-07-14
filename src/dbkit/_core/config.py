@@ -65,6 +65,14 @@ class PoolConfig:
     long_hold_warning_seconds: float = 2.0
     # Use NullPool (no pooling) for external-pooler deployments like PgBouncer.
     disable_pooling: bool = False
+    # Disable server-side prepared-statement autoprep (psycopg's prepare_threshold,
+    # asyncpg's statement_cache_size). Required correctness fix under PgBouncer's
+    # *transaction* pooling mode: a client connection may land on a different physical
+    # backend each transaction, so a server-side prepared statement id from a prior
+    # transaction may not exist there. Does not affect PgBouncer session pooling. This
+    # toolkit already scopes every session setting with SET LOCAL / per-transaction
+    # (never bare session-level SET), so no other change is needed for PgBouncer compatibility.
+    pgbouncer_compatible: bool = False
 
     @property
     def max_connections(self) -> int:
@@ -370,6 +378,7 @@ def _pool(data: Mapping[str, Any] | None) -> PoolConfig | None:
         connect_timeout_seconds=float(data.get("connect_timeout_seconds", 10.0)),
         long_hold_warning_seconds=float(data.get("long_hold_warning_seconds", 2.0)),
         disable_pooling=bool(data.get("disable_pooling", False)),
+        pgbouncer_compatible=bool(data.get("pgbouncer_compatible", False)),
     )
 
 

@@ -24,6 +24,8 @@ SCRIPTS = [
     "streaming.py",
     "bulk_insert_upsert.py",
     "copy_ingest.py",
+    "pipeline_mode.py",
+    "pgbouncer_mode.py",
     "inbox_idempotent_consumer.py",
     "batch_collector.py",
     "health_and_pool.py",

@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — unnest() bulk strategy, psycopg pipeline mode, PgBouncer-compatible mode
+- `strategy="unnest"` on `insert_many`/`upsert_many` (`postgres/unnest.py`): one array-per-
+  column bind instead of one bind per column per row, so batch size isn't limited by
+  PostgreSQL's 65535 bind-parameter ceiling — ~32× faster than `execute_many` at 20k rows
+  in-benchmark. Each column is cast with `CAST(:name AS type[])` — SQLAlchemy's `text()`
+  silently leaves `:name::type` unparsed as a bindparam, so the `::` shorthand can't be used.
+  Works with `atomic`/`best_effort`/`split_on_failure` modes and `ON CONFLICT` upserts.
+- `tx.pipeline()` (`postgres/pipeline.py`): psycopg pipeline mode as a raw-driver escape
+  hatch, mirroring COPY's `get_raw_connection()`/`driver_connection` pattern. Batches
+  dependent statements into one round trip without waiting for each response; ordinary
+  `tx.execute(...)` calls work unchanged inside the block. PostgreSQL + psycopg only.
+- `PoolConfig.pgbouncer_compatible`: disables driver-side autoprepare (psycopg's
+  `prepare_threshold`, asyncpg's `statement_cache_size`) — required under PgBouncer
+  *transaction* pooling, where a connection may hit a different physical backend each
+  transaction. Every session setting was already `SET LOCAL`/per-transaction scoped.
+- Examples: `pipeline_mode.py`, `pgbouncer_mode.py`, and an `unnest` section added to
+  `bulk_insert_upsert.py`.
+
 ### Added — Transaction instrumentation & long-transaction detection
 - `TX_TOTAL` / `TX_DURATION` / `TX_ROLLBACK` / `COMMIT_UNKNOWN` metrics are now actually
   emitted on every transaction exit (commit, rollback, cancellation, commit-unknown) — these

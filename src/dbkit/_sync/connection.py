@@ -10,6 +10,7 @@ mapping, timeouts, and error classification live in exactly one place.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -20,7 +21,7 @@ from sqlalchemy import Connection
 from .._core import result as result_mod
 from .._core.errors import classify
 from .._core.query import Query, Statement, coerce_statement
-from ._compat import IS_ASYNC, timeout_scope
+from ._compat import IS_ASYNC, pipeline_scope, timeout_scope
 
 
 def apply_statement_timeout_sql(seconds: float | None) -> str | None:
@@ -105,6 +106,23 @@ class ConnectionScope:
     def raw(self) -> Connection:
         """The underlying SQLAlchemy connection (escape hatch, §7.3)."""
         return self._conn
+
+    def pipeline(self) -> contextlib.AbstractContextManager[None]:
+        """Enter psycopg pipeline mode (§7.3): statements issued in this block are sent to the
+        server without waiting for each response before the next — one round trip for several
+        dependent-but-batchable statements (e.g. a business write plus its inbox record, §28).
+
+        Usage::
+
+            with db.transaction(target=t) as tx, tx.pipeline():
+                tx.execute(INSERT_ORDER, params)
+                tx.execute(INSERT_INBOX, params)
+
+        PostgreSQL + psycopg only; raises :class:`DatabaseUnsupportedOperationError` otherwise.
+        Ordinary ``tx.execute(...)`` calls work unchanged inside the block — SQLAlchemy's
+        cursor execution transparently syncs the pipeline whenever a result is fetched.
+        """
+        return pipeline_scope(self._conn)
 
     def _resolve(
         self, query: object, params: Mapping[str, Any] | None

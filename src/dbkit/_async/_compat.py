@@ -50,6 +50,13 @@ async def copy_from_records(sa_conn: Any, table: str, columns: Any, records: Any
     return await copy_records_async(sa_conn, table, columns, records)
 
 
+def pipeline_scope(sa_conn: Any) -> contextlib.AbstractAsyncContextManager[None]:
+    """Dispatch to the async psycopg pipeline-mode implementation (§7.3)."""
+    from ..postgres.pipeline import pipeline_scope_async
+
+    return pipeline_scope_async(sa_conn)
+
+
 def timeout_scope(seconds: float | None) -> contextlib.AbstractAsyncContextManager[Any]:
     """A client-side deadline. Async uses :func:`asyncio.timeout`; the sync build has no
     client-side timeout and relies on the server ``statement_timeout`` instead (§12.1)."""

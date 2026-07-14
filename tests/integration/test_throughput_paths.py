@@ -109,6 +109,141 @@ async def test_upsert_many_updates_on_conflict(db: AsyncDatabase) -> None:
     assert await db.fetch_value(sql("SELECT count(*) FROM dbkit_p3_bulk"), target=READ) == 15
 
 
+# --- unnest bulk strategy ------------------------------------------------------------- #
+
+
+async def test_insert_many_unnest_strategy(db: AsyncDatabase) -> None:
+    await db.execute(sql("TRUNCATE dbkit_p3_bulk"), target=TARGET)
+    result = await db.insert_many(
+        BULK,
+        [{"id": i, "v": f"n{i}"} for i in range(3000)],
+        target=TARGET,
+        strategy="unnest",
+        batch_size=1000,
+    )
+    assert result.row_count == 3000
+    count = await db.fetch_value(sql("SELECT count(*) FROM dbkit_p3_bulk"), target=READ)
+    assert count == 3000
+    sample = await db.fetch_value(sql("SELECT v FROM dbkit_p3_bulk WHERE id = 1500"), target=READ)
+    assert sample == "n1500"
+
+
+async def test_upsert_many_unnest_strategy(db: AsyncDatabase) -> None:
+    await db.execute(sql("TRUNCATE dbkit_p3_bulk"), target=TARGET)
+    await db.insert_many(BULK, [{"id": i, "v": "old"} for i in range(10)], target=TARGET)
+    result = await db.upsert_many(
+        BULK,
+        [{"id": i, "v": "new"} for i in range(5, 15)],
+        target=TARGET,
+        conflict_index_elements=["id"],
+        update_columns=["v"],
+        strategy="unnest",
+    )
+    assert result.row_count == 10
+    assert await db.fetch_value(sql("SELECT v FROM dbkit_p3_bulk WHERE id=7"), target=READ) == "new"
+    assert await db.fetch_value(sql("SELECT count(*) FROM dbkit_p3_bulk"), target=READ) == 15
+
+
+async def test_insert_many_unnest_split_on_failure(db: AsyncDatabase) -> None:
+    await db.execute(sql("TRUNCATE dbkit_p3_bulk"), target=TARGET)
+    rows = [{"id": i, "v": "x"} for i in range(100)] + [{"id": 50, "v": "dup"}]
+    result = await db.insert_many(
+        BULK, rows, target=TARGET, mode="split_on_failure", strategy="unnest", batch_size=200
+    )
+    assert result.row_count == 100
+    assert await db.fetch_value(sql("SELECT count(*) FROM dbkit_p3_bulk"), target=READ) == 100
+
+
+async def test_insert_many_unnest_rolls_back_atomically(db: AsyncDatabase) -> None:
+    from dbkit.errors import DatabaseUniqueViolationError
+
+    await db.execute(sql("TRUNCATE dbkit_p3_bulk"), target=TARGET)
+    rows = [{"id": i, "v": "x"} for i in range(50)] + [{"id": 10, "v": "dup"}]
+    with pytest.raises(DatabaseUniqueViolationError):
+        await db.insert_many(BULK, rows, target=TARGET, mode="atomic", strategy="unnest")
+    assert await db.fetch_value(sql("SELECT count(*) FROM dbkit_p3_bulk"), target=READ) == 0
+
+
+# --- pipeline mode (psycopg escape hatch) --------------------------------------------- #
+
+
+async def test_pipeline_mode_dependent_statements(db: AsyncDatabase) -> None:
+    await db.execute(
+        sql("CREATE TABLE IF NOT EXISTS dbkit_p3_pipe_a (id int primary key, v text)"),
+        target=TARGET,
+    )
+    await db.execute(
+        sql("CREATE TABLE IF NOT EXISTS dbkit_p3_pipe_b (id int primary key, order_id int)"),
+        target=TARGET,
+    )
+    await db.execute(sql("TRUNCATE dbkit_p3_pipe_a, dbkit_p3_pipe_b"), target=TARGET)
+
+    async with db.transaction(target=TARGET) as tx, tx.pipeline():
+        for i in range(200):
+            await tx.execute(
+                sql("INSERT INTO dbkit_p3_pipe_a (id, v) VALUES (:id, :v)"),
+                {"id": i, "v": f"order-{i}"},
+            )
+            await tx.execute(
+                sql("INSERT INTO dbkit_p3_pipe_b (id, order_id) VALUES (:id, :order_id)"),
+                {"id": i, "order_id": i},
+            )
+
+    count_a = await db.fetch_value(sql("SELECT count(*) FROM dbkit_p3_pipe_a"), target=READ)
+    count_b = await db.fetch_value(sql("SELECT count(*) FROM dbkit_p3_pipe_b"), target=READ)
+    assert count_a == 200
+    assert count_b == 200
+
+
+async def test_pipeline_mode_rollback_still_discards(db: AsyncDatabase) -> None:
+    await db.execute(sql("TRUNCATE dbkit_p3_pipe_a, dbkit_p3_pipe_b"), target=TARGET)
+    with pytest.raises(RuntimeError):
+        async with db.transaction(target=TARGET) as tx, tx.pipeline():
+            await tx.execute(
+                sql("INSERT INTO dbkit_p3_pipe_a (id, v) VALUES (:id, :v)"),
+                {"id": 9999, "v": "will vanish"},
+            )
+            raise RuntimeError("boom")
+    exists = await db.fetch_optional(
+        sql("SELECT 1 FROM dbkit_p3_pipe_a WHERE id = 9999"), target=READ
+    )
+    assert exists is None
+
+
+# --- PgBouncer-compatible pooling mode ------------------------------------------------- #
+
+
+async def test_pgbouncer_compatible_disables_prepare_threshold(base_config: dict) -> None:
+    cfg = {
+        **base_config,
+        "defaults": {**base_config["defaults"], "pool": {"pgbouncer_compatible": True}},
+    }
+    db = AsyncDatabase.from_config(cfg)
+    await db.start()
+    try:
+        entry = next(iter(db._registry._entries.values()))
+        async with entry.engine.connect() as conn:
+            raw = await conn.get_raw_connection()
+            assert raw.driver_connection.prepare_threshold is None
+        # still fully functional with autoprep disabled
+        for i in range(10):
+            assert await db.fetch_value(sql("SELECT :n"), {"n": i}, target=READ) == i
+    finally:
+        await db.close()
+
+
+async def test_pgbouncer_compatible_off_by_default(base_config: dict) -> None:
+    db = AsyncDatabase.from_config(base_config)
+    await db.start()
+    try:
+        entry = next(iter(db._registry._entries.values()))
+        async with entry.engine.connect() as conn:
+            raw = await conn.get_raw_connection()
+            assert raw.driver_connection.prepare_threshold == 5  # psycopg's own default
+    finally:
+        await db.close()
+
+
 # --- COPY --------------------------------------------------------------------------- #
 
 

@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from typing import Any, Literal
 
 from sqlalchemy import Table, insert
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .._core import bulk as bulk_mod
@@ -42,6 +43,7 @@ from ..observability import logging as obslog
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink, NoopMetrics
 from ..observability.tracing import Tracer, make_tracer
+from ..postgres import unnest as unnest_mod
 from ._compat import API_LABEL, copy_from_records
 from .connection import AsyncConnectionScope, run_execute
 from .engine import AsyncEngineRegistry, EngineEntry
@@ -687,16 +689,23 @@ class AsyncDatabase:
         *,
         target: DatabaseTarget,
         mode: bulk_mod.FailureMode = "atomic",
+        strategy: bulk_mod.InsertStrategy = "execute_many",
         batch_size: int | None = None,
         timeout: float | None = None,
     ) -> ExecutionResult:
-        """Insert many rows in adaptively-sized batches (§19). ``rows`` are param dicts."""
+        """Insert many rows in adaptively-sized batches (§19). ``rows`` are param dicts.
+
+        ``strategy="unnest"`` (PostgreSQL only) binds one array parameter per column instead
+        of one parameter per column per row, so batch size isn't limited by the bind-parameter
+        ceiling — a mid-tier option between ``execute_many`` and COPY.
+        """
         return await self._bulk_write(
             table,
             insert(table),
             rows,
             target=target,
             mode=mode,
+            strategy=strategy,
             batch_size=batch_size,
             timeout=timeout,
             query_name=f"{table.name}.insert_many",
@@ -711,6 +720,7 @@ class AsyncDatabase:
         conflict_index_elements: Sequence[str],
         update_columns: Sequence[str] | None = None,
         mode: bulk_mod.FailureMode = "atomic",
+        strategy: bulk_mod.InsertStrategy = "execute_many",
         batch_size: int | None = None,
         timeout: float | None = None,
     ) -> ExecutionResult:
@@ -732,9 +742,12 @@ class AsyncDatabase:
             rows,
             target=target,
             mode=mode,
+            strategy=strategy,
             batch_size=batch_size,
             timeout=timeout,
             query_name=f"{table.name}.upsert_many",
+            conflict_index_elements=conflict_index_elements,
+            update_columns=update_columns,
         )
 
     async def _bulk_write(
@@ -748,6 +761,9 @@ class AsyncDatabase:
         batch_size: int | None,
         timeout: float | None,
         query_name: str,
+        strategy: bulk_mod.InsertStrategy = "execute_many",
+        conflict_index_elements: Sequence[str] | None = None,
+        update_columns: Sequence[str] | None = None,
     ) -> ExecutionResult:
         start = time.monotonic()
         if not rows:
@@ -758,9 +774,30 @@ class AsyncDatabase:
         labels = self._labels(entry, query_name, "write")
         limiter = self._limiter_for(entry.key.database)
         bulk_cfg = self._config.defaults.bulk
-        n_cols = len(bulk_mod.column_names(list(rows)))
+        columns = bulk_mod.column_names(list(rows))
+
+        if strategy == "unnest":
+            if not self._is_postgres(entry):
+                raise DatabaseUnsupportedOperationError(
+                    "strategy='unnest' requires PostgreSQL; this target uses a different dialect"
+                )
+            column_types = {
+                c: table.c[c].type.compile(dialect=postgresql.dialect())  # type: ignore[no-untyped-call]
+                for c in columns
+            }
+            unnest_stmt = unnest_mod.unnest_insert_sql(
+                table.name,
+                columns,
+                column_types,
+                conflict_index_elements=conflict_index_elements,
+                update_columns=update_columns,
+            )
+            plan = _BulkPlan(unnest_stmt, columns=columns)
+        else:
+            plan = _BulkPlan(statement, columns=None)
+
         batch_rows = bulk_mod.resolve_batch_rows(
-            n_cols,
+            len(columns),
             batch_size or bulk_cfg.default_batch_rows,
             bulk_mod.BulkLimits(max_rows=bulk_cfg.max_batch_rows),
         )
@@ -781,11 +818,12 @@ class AsyncDatabase:
                 if mode == "atomic":
                     async with self.transaction(target=target, timeout=eff_timeout) as tx:
                         for batch in batches:
+                            stmt, params = plan.for_batch(batch)
                             try:
                                 cursor = await run_execute(
                                     tx.raw,
-                                    statement,
-                                    list(batch),
+                                    stmt,
+                                    params,
                                     timeout=eff_timeout,
                                     is_postgres=self._is_postgres(entry),
                                 )
@@ -801,7 +839,7 @@ class AsyncDatabase:
                 else:
                     written = await self._bulk_best_effort(
                         entry,
-                        statement,
+                        plan,
                         batches,
                         mode=mode,
                         timeout=eff_timeout,
@@ -820,7 +858,7 @@ class AsyncDatabase:
     async def _bulk_best_effort(
         self,
         entry: EngineEntry,
-        statement: Any,
+        plan: _BulkPlan,
         batches: list[Any],
         *,
         mode: bulk_mod.FailureMode,
@@ -833,13 +871,14 @@ class AsyncDatabase:
         written = 0
         for batch in batches:
             try:
+                stmt, params = plan.for_batch(batch)
                 async with self._scope(
                     target, query_name, call_timeout=timeout, deadline=None, commit=True
                 ) as scope:
                     cursor = await run_execute(
                         scope.raw,
-                        statement,
-                        list(batch),
+                        stmt,
+                        params,
                         timeout=timeout,
                         is_postgres=self._is_postgres(entry),
                     )
@@ -851,13 +890,14 @@ class AsyncDatabase:
                     continue
                 for row in batch:
                     try:
+                        row_stmt, row_params = plan.for_batch([row])
                         async with self._scope(
                             target, query_name, call_timeout=timeout, deadline=None, commit=True
                         ) as scope:
                             await run_execute(
                                 scope.raw,
-                                statement,
-                                [row],
+                                row_stmt,
+                                row_params,
                                 timeout=timeout,
                                 is_postgres=self._is_postgres(entry),
                             )
@@ -919,6 +959,22 @@ class AsyncDatabase:
             database_name=target.database,
             duration_ms=(time.monotonic() - start) * 1000,
         )
+
+
+class _BulkPlan:
+    """How to turn a batch of row-dicts into ``(statement, params)`` for one execution —
+    abstracts over ``execute_many`` (list-of-dicts params) vs ``unnest`` (one array bind per
+    column) so :meth:`AsyncDatabase._bulk_write` / `_bulk_best_effort` stay strategy-agnostic.
+    """
+
+    def __init__(self, statement: Any, *, columns: Sequence[str] | None) -> None:
+        self._statement = statement
+        self._columns = columns
+
+    def for_batch(self, batch: Sequence[Mapping[str, Any]]) -> tuple[Any, Any]:
+        if self._columns is not None:
+            return self._statement, unnest_mod.columnar_params(batch, self._columns)
+        return self._statement, list(batch)
 
 
 def _make_default_metrics(config: DbkitConfig) -> MetricsSink:

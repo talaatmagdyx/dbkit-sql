@@ -45,6 +45,13 @@ def copy_from_records(sa_conn: Any, table: str, columns: Any, records: Any) -> i
     return copy_records_sync(sa_conn, table, columns, records)
 
 
+def pipeline_scope(sa_conn: Any) -> contextlib.AbstractContextManager[None]:
+    """Dispatch to the sync psycopg pipeline-mode implementation (§7.3)."""
+    from ..postgres.pipeline import pipeline_scope_sync
+
+    return pipeline_scope_sync(sa_conn)
+
+
 def timeout_scope(seconds: float | None) -> contextlib.AbstractContextManager[None]:
     """No client-side deadline in the sync build; server ``statement_timeout`` does the work."""
     return contextlib.nullcontext()

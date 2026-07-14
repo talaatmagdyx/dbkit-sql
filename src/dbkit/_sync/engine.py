@@ -19,7 +19,7 @@ from typing import Any
 from sqlalchemy import NullPool
 from sqlalchemy import Engine, create_engine
 
-from .._core.config import DbkitConfig, TargetConfig
+from .._core.config import DbkitConfig, PoolConfig, TargetConfig
 from .._core.errors import DatabaseConfigurationError, DatabaseRoutingError
 from .._core.keys import EngineKey
 from .._core.routing import ResolvedRoute
@@ -42,13 +42,22 @@ class EngineEntry:
         return self.instrumentation.snapshot(sync_engine_of(self.engine).pool)
 
 
-def _connect_args(target: TargetConfig, connect_timeout: float) -> dict[str, Any]:
+def _connect_args(target: TargetConfig, pool: PoolConfig) -> dict[str, Any]:
     driver = target.driver
     if driver in ("psycopg", "psycopg2"):
-        return {"connect_timeout": int(max(connect_timeout, 1))}
+        args: dict[str, Any] = {"connect_timeout": int(max(pool.connect_timeout_seconds, 1))}
+        if pool.pgbouncer_compatible:
+            # Disable server-side prepared-statement autoprep — required under PgBouncer
+            # transaction pooling, where a connection may hit a different backend each
+            # transaction (§ pgbouncer_compatible docstring on PoolConfig).
+            args["prepare_threshold"] = None
+        return args
     if driver == "asyncpg":
         # asyncpg names its connection establishment timeout "timeout".
-        return {"timeout": connect_timeout}
+        args = {"timeout": pool.connect_timeout_seconds}
+        if pool.pgbouncer_compatible:
+            args["statement_cache_size"] = 0
+        return args
     return {}
 
 
@@ -107,7 +116,7 @@ class EngineRegistry:
     def _build_engine(self, target: TargetConfig) -> Engine:
         pool = target.resolved_pool(self._config.defaults)
         kwargs: dict[str, Any] = {
-            "connect_args": _connect_args(target, pool.connect_timeout_seconds),
+            "connect_args": _connect_args(target, pool),
             "pool_pre_ping": pool.pre_ping,
         }
         if pool.disable_pooling:
