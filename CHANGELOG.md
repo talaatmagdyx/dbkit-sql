@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — real load-test evidence for the performance review (`PERFORMANCE_REVIEW.md`)
+- Six new benchmark/test scripts run against live PostgreSQL, replacing estimates with measured
+  results: `benchmarks/bench_concurrency_scaling.py` (concurrency 1→500, both pool configs —
+  found throughput plateaus at ~3.6-3.8k ops/s regardless of pool capacity 15 vs. 100, correcting
+  this review's earlier "pool is the first bottleneck" assumption), `benchmarks/
+  bench_observability_overhead.py` (OTel tracing +3.2%, Prometheus +5.6%, OTel metrics +0.5% p50
+  vs. baseline), `benchmarks/bench_streaming_scale.py` (max RSS growth +3.6MB across 1M/5M-row
+  narrow/wide streams), `benchmarks/bench_shard_cardinality.py` (new finding below), and two new
+  integration tests: `test_deadlock_storm_is_classified_and_recovers_via_manual_retry` and
+  `test_retry_storm_against_intermittently_killed_backends_mostly_recovers` (both in
+  `tests/integration/test_resilience_scenarios.py`), plus
+  `tests/integration/test_multiprocess_connection_budget.py` — validates the connection-budget
+  formula (`per_process * app_replicas`) against 4 real OS subprocesses at full pool utilization:
+  exactly the predicted 20 connections observed.
+- **New finding, documented (not a bug)**: under load-testing at high shard cardinality, a
+  concurrency level *exceeding* `max_engines` causes the engine-cache to thrash continuously and
+  transiently exceed PostgreSQL's `max_connections` — the LRU cache bounds steady-state engine
+  count but not concurrent engine-creation-in-flight events. Confirmed via detailed exception
+  capture that this always surfaces as a classified `DatabaseConnectionError`, never a hang.
+  Operational guidance: size `max_engines` to comfortably exceed expected *concurrent*
+  distinct-shard fan-out, not just total shard cardinality.
+
 ### Added — deep performance review fixes
 - **`benchmarks/bench_unnest.py`** (new): the `unnest()` bulk-insert strategy previously had no
   committed benchmark at all backing its documented "~32× faster than `execute_many`" claim.
