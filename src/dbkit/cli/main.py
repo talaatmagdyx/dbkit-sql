@@ -1,6 +1,6 @@
 """dbkit CLI — configuration validation, health, and pool diagnostics (§31).
 
-Requires the ``cli`` extra: ``pip install dbkit[cli]``. All output redacts secrets; commands
+Requires the ``cli`` extra: ``pip install dbkit-sql[cli]``. All output redacts secrets; commands
 that touch the network report classified errors cleanly instead of raw tracebacks.
 """
 
@@ -192,7 +192,9 @@ def metrics(
     try:
         from prometheus_client import CollectorRegistry, generate_latest
     except ImportError as exc:
-        typer.echo("the `prometheus` extra is required: pip install dbkit[prometheus]", err=True)
+        typer.echo(
+            "the `prometheus` extra is required: pip install dbkit-sql[prometheus]", err=True
+        )
         raise typer.Exit(code=1) from exc
 
     from .._core.query import Query, sql

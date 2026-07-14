@@ -1,6 +1,6 @@
 # CLI
 
-Install with the `cli` extra: `pip install dbkit[cli]`. Every command takes a YAML config file
+Install with the `cli` extra: `pip install dbkit-sql[cli]`. Every command takes a YAML config file
 (the same shape as `DbkitConfig.from_yaml`, §30). All output redacts secrets; commands that
 touch the network report classified errors cleanly instead of raw tracebacks, and exit non-zero
 on failure.

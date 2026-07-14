@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "dbkit"
+name = "dbkit-sql"
 version = "0.1.0"
 description = "A thin, high-throughput SQL toolkit over SQLAlchemy Core — sync and async, ORM-free."
 readme = "README.md"
@@ -38,7 +38,7 @@ orjson = ["orjson>=3.10"]
 cli = ["typer>=0.12"]
 bench = ["psutil>=5.9"]
 dev = [
-    "dbkit[psycopg,asyncpg,yaml,prometheus,pydantic,bench,otel,cli]",
+    "dbkit-sql[psycopg,asyncpg,yaml,prometheus,pydantic,bench,otel,cli]",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
@@ -56,9 +56,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/dbkit/dbkit"
-Source = "https://github.com/dbkit/dbkit"
-Issues = "https://github.com/dbkit/dbkit/issues"
+Homepage = "https://github.com/talaatmagdyx/dbkit"
+Source = "https://github.com/talaatmagdyx/dbkit"
+Issues = "https://github.com/talaatmagdyx/dbkit/issues"
 
 [project.scripts]
 dbkit = "dbkit.cli.main:main"

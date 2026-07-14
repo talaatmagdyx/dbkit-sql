@@ -35,9 +35,12 @@ SQLAlchemy backend.
 ## Install
 
 ```bash
-pip install "dbkit[psycopg]"                  # async + sync PostgreSQL
-pip install "dbkit[psycopg,yaml,prometheus,otel,cli]"
+pip install "dbkit-sql[psycopg]"                  # async + sync PostgreSQL
+pip install "dbkit-sql[psycopg,yaml,prometheus,otel,cli]"
 ```
+
+> The PyPI distribution is `dbkit-sql` (the name `dbkit` was already taken) — but the import
+> stays `import dbkit` regardless of which extras you install.
 
 ## Quickstart
 
