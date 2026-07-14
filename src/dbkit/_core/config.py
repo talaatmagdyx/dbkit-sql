@@ -223,6 +223,22 @@ class DatabaseConfig:
     def all_targets(self) -> tuple[TargetConfig, ...]:
         return (self.primary, *self.replicas)
 
+    def max_connections(self, defaults: Defaults) -> int:
+        """This database's own connection ceiling: sum of primary + every replica's pool (§10.3)."""
+        return sum(t.resolved_pool(defaults).max_connections for t in self.all_targets())
+
+    def enforce_connection_budget(self, defaults: Defaults, *, database_name: str) -> None:
+        """Fail startup if this database alone exceeds its own configured budget (§10.3)."""
+        limit = self.connection_budget.maximum_per_process
+        if limit is None or not self.connection_budget.enforce_at_startup:
+            return
+        actual = self.max_connections(defaults)
+        if actual > limit:
+            raise DatabaseConfigurationError(
+                f"connection budget exceeded for database {database_name!r}: configured "
+                f"pools allow up to {actual} connections but the budget is {limit}"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class DbkitConfig:
@@ -232,6 +248,12 @@ class DbkitConfig:
     environment: str = "default"
     defaults: Defaults = field(default_factory=Defaults)
     connection_budget: ConnectionBudgetConfig = field(default_factory=ConnectionBudgetConfig)
+    #: Process-wide cap on live engines (across all databases/shards/tenants), for dynamic
+    #: per-tenant deployments where the number of distinct tenants may be unbounded (§22.4).
+    max_engines: int | None = None
+    #: When True and ``max_engines`` is reached, evict (dispose) the least-recently-used
+    #: engine instead of failing. Default False: exceeding the cap is a configuration error.
+    evict_lru_engines: bool = False
 
     # -- construction ------------------------------------------------------------- #
 
@@ -280,6 +302,7 @@ class DbkitConfig:
             if not name:
                 raise DatabaseConfigurationError("database name must be non-empty")
             db.validate()
+            db.enforce_connection_budget(self.defaults, database_name=name)
         self.enforce_connection_budget()
 
     def max_connections_per_process(self) -> int:
@@ -466,9 +489,12 @@ def _build_config(raw: Mapping[str, Any]) -> DbkitConfig:
     if not databases_raw:
         raise DatabaseConfigurationError("configuration must define a 'databases' mapping")
     databases = {name: _database(name, cfg) for name, cfg in databases_raw.items()}
+    max_engines = raw.get("max_engines")
     return DbkitConfig(
         databases=databases,
         environment=raw.get("environment", "default"),
         defaults=_defaults(raw.get("defaults")),
         connection_budget=_budget(raw.get("connection_budget")),
+        max_engines=int(max_engines) if max_engines is not None else None,
+        evict_lru_engines=bool(raw.get("evict_lru_engines", False)),
     )

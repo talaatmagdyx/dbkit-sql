@@ -20,6 +20,7 @@ from .._core.errors import DatabaseQueryTimeoutError, classify
 from .._core.query import Statement
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink
+from ..observability.tracing import Tracer
 from ._compat import stream_mappings
 
 
@@ -40,6 +41,8 @@ class AsyncResultStream:
         metrics: MetricsSink,
         labels: dict[str, str],
         max_duration: float | None = None,
+        tracer: Tracer | None = None,
+        shard_id: str | None = None,
     ) -> None:
         self._engine = engine
         self._statement = statement
@@ -52,12 +55,26 @@ class AsyncResultStream:
         self._metrics = metrics
         self._labels = labels
         self._max_duration = max_duration
+        self._tracer = tracer
+        self._shard_id = shard_id
         self._conn: AsyncConnection | None = None
         self._gen: Any = None
         self._count = 0
         self._started_at = 0.0
+        self._span_cm: Any = None
+        self._span: Any = None
 
     async def __aenter__(self) -> AsyncResultStream:
+        if self._tracer is not None:
+            self._span_cm = self._tracer.span(
+                "dbkit.stream",
+                operation_type="stream",
+                query_name=self._query_name,
+                database=self._database,
+                shard=self._shard_id,
+                role=self._role,
+            )
+            self._span = self._span_cm.__enter__()
         try:
             self._conn = await self._engine.connect()
             self._gen = stream_mappings(self._conn, self._statement, self._params, self._batch_size)
@@ -96,8 +113,12 @@ class AsyncResultStream:
         self._count += 1
         return self._mapper(row)
 
-    async def __aexit__(self, *exc: object) -> bool:
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
         await self._cleanup()
+        if self._span_cm is not None:
+            if self._span is not None:
+                self._span.set_attribute("db.rows_affected", self._count)
+            self._span_cm.__exit__(exc_type, exc_val, exc_tb)
         return False
 
     async def _cleanup(self) -> None:

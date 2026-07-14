@@ -25,7 +25,19 @@ from ._core.config import (
 )
 from ._core.query import Query, QueryRegistry, default_registry, sql
 from ._core.result import ExecutionResult
-from ._core.routing import DatabaseTarget
+from ._core.routing import (
+    CallableShardResolver,
+    DatabaseTarget,
+    DirectoryShardResolver,
+    HashShardResolver,
+    RangeShardResolver,
+    ReplicaSelector,
+    RoundRobinReplicaSelector,
+    ShardRange,
+    ShardResolver,
+    SingleShardResolver,
+    WeightedReplicaSelector,
+)
 from ._sync.database import Database
 
 __version__ = "0.1.0.dev0"
@@ -33,6 +45,7 @@ __version__ = "0.1.0.dev0"
 __all__ = [
     "AsyncDatabase",
     "BulkConfig",
+    "CallableShardResolver",
     "CircuitBreakerConfig",
     "ConcurrencyConfig",
     "ConnectionBudgetConfig",
@@ -41,13 +54,22 @@ __all__ = [
     "DatabaseTarget",
     "DbkitConfig",
     "Defaults",
+    "DirectoryShardResolver",
     "ExecutionResult",
+    "HashShardResolver",
     "ObservabilityConfig",
     "PoolConfig",
     "Query",
     "QueryRegistry",
+    "RangeShardResolver",
+    "ReplicaSelector",
     "RetryConfig",
+    "RoundRobinReplicaSelector",
+    "ShardRange",
+    "ShardResolver",
+    "SingleShardResolver",
     "TargetConfig",
+    "WeightedReplicaSelector",
     "__version__",
     "default_registry",
     "errors",

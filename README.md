@@ -9,20 +9,25 @@ message consumers, background workers, and CLIs.
   normalized errors (SQLSTATE-aware), and conservative retries.
 - **Built on SQLAlchemy.** Pooling, dialects, and driver integration are SQLAlchemy's job —
   dbkit adds routing, resilience, observability, and bulk/streaming ergonomics.
+- **Multi-database and sharded.** Named databases, pluggable shard resolvers (hash/range/
+  directory/callable), replica routing with read-your-writes, LRU engine eviction.
+- **Fully observable.** Structured logging, Prometheus metrics, and OpenTelemetry tracing.
 - **PostgreSQL first-class** (psycopg 3 default, asyncpg optional), general across any
   SQLAlchemy backend.
 
-> Status: **alpha**. Phases 1–3 are delivered: core runtime (config, pooling, transactions,
-> typed results, health, observability), resilience (retries, circuit breaker, concurrency
-> limits), and high-throughput paths (streaming, bulk insert/upsert, PostgreSQL COPY, inbox /
-> exactly-once consumer helpers). See `docs/requirements.md` for the full spec, `docs/roadmap.md`
-> for phased delivery, and `docs/testing.md` for the test/chaos/benchmark commands.
+> Status: **alpha**. Phases 1–5 are delivered: core runtime, resilience (retries, circuit
+> breaker, concurrency limits), high-throughput paths (streaming, bulk insert/upsert,
+> PostgreSQL COPY, exactly-once consumer helpers), multi-database & sharding (shard/replica
+> routing, read-your-writes, engine LRU eviction), and production hardening (OpenTelemetry
+> tracing, CLI, docs site, PyPI release readiness). See `docs/requirements.md` for the full
+> spec, `docs/roadmap.md` for phased delivery, and `docs/testing.md` for the test/chaos/
+> benchmark commands.
 
 ## Install
 
 ```bash
 pip install "dbkit[psycopg]"          # async + sync PostgreSQL
-pip install "dbkit[psycopg,yaml,prometheus]"
+pip install "dbkit[psycopg,yaml,prometheus,otel,cli]"
 ```
 
 ## Quickstart (async)
@@ -73,6 +78,17 @@ export DBKIT_DSN=postgresql+psycopg://localhost/postgres
 python examples/quickstart_async.py
 python examples/run_all.py            # runs every example, safe to repeat
 ```
+
+## CLI
+
+```bash
+pip install "dbkit[cli]"
+dbkit config-validate config.yaml
+dbkit check config.yaml           # validate + full readiness check
+dbkit pools config.yaml           # warm a connection, print pool status
+```
+
+See `docs/cli.md` for the full command reference.
 
 ## Development
 

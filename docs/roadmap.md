@@ -1,11 +1,12 @@
 # Delivery Roadmap
 
-dbkit is delivered in phases. Phase 1 is the current focus; later modules exist as typed
-stubs that raise `UnsupportedOperationError` so the public API surface is stable from day one.
+dbkit is delivered in phases. Phases 1–5 are delivered; a handful of stretch items remain
+noted per phase, and any interface not yet implemented raises `UnsupportedOperationError` so
+the public API surface stays stable.
 
 See `docs/requirements.md` for the full product/engineering requirements this roadmap implements.
 
-## Phase 1 — Core Runtime (current)
+## Phase 1 — Core Runtime ✅ (delivered)
 
 - Configuration model, loaders (dict/env/YAML), validation, connection-budget calculator.
 - `Query` + `sql()` wrapper + registry.
@@ -15,7 +16,9 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
 - Engine registry, instrumented connection pooling, leak detection.
 - Explicit transactions, savepoints, commit-unknown detection, cancellation cleanup.
 - Health checks, graceful startup/shutdown.
-- Structured logging + metrics protocol (Prometheus adapter).
+- Structured logging + metrics protocol (Prometheus adapter) + OpenTelemetry tracing
+  (`observability/tracing.py`, graceful no-op when OTel isn't installed/enabled; spans on
+  every read/write/transaction/stream/bulk-write/COPY, never carrying SQL text or params).
 - Sync + async facades from one source (unasync generation).
 
 ## Phase 2 — Resilience ✅ (delivered)
@@ -47,12 +50,34 @@ Remaining for a later pass: long-transaction detection surfaced as a metric/warn
 Remaining for a later pass: psycopg pipeline mode, `unnest()` array-insert strategy, a
 first-class Celery/RabbitMQ subscriber adapter.
 
-## Phase 4 — Multi-database & sharding
+## Phase 4 — Multi-database & sharding ✅ (delivered)
 
-Shard resolver strategies (hash/range/directory); replica routing + `consistency_scope`;
-engine LRU eviction for tenant explosion; per-database budgets.
+- Shard resolvers (`_core/routing.py`): `HashShardResolver` (SHA-256, deterministic across
+  restarts/processes — never Python's randomized `hash()`), `RangeShardResolver`,
+  `DirectoryShardResolver` (fails closed on unmapped keys), `CallableShardResolver`.
+- Replica routing: `RoundRobinReplicaSelector` / `WeightedReplicaSelector`, wired into the
+  facade — reads with `role="read"`/`"prefer_replica"` now actually route to a configured
+  replica engine; writes and `role="primary_only"` always hit the primary.
+- `db.consistency_scope(mode="read_your_writes")`: a task-local (`contextvars`) override that
+  forces reads back to the primary so they observe writes made earlier in the same scope.
+- Engine LRU eviction (`AsyncEngineRegistry(evict_lru=True)`): reaching `max_engines` disposes
+  the least-recently-used engine instead of failing — for dynamic per-tenant deployments.
+  Default (`evict_lru=False`) keeps the strict hard-cap.
+- Per-database connection budgets (`DatabaseConfig.enforce_connection_budget`): a single
+  database can fail startup on its own budget, independent of the global one.
 
-## Phase 5 — Production hardening & OSS release
+## Phase 5 — Production hardening & OSS release ✅ (delivered)
 
-OpenTelemetry spans; CLI; failure-injection/load/soak suites; benchmark harness;
-PgBouncer-compatible mode; docs site; first PyPI release.
+- CLI (`dbkit` console script / `dbkit.cli.main`): `check`, `health`, `pools`, `engines`,
+  `config-validate`, `connection-budget`, `query-list` — secret-redacted output, classified
+  errors instead of tracebacks, non-zero exit on failure.
+- Docs site (`mkdocs.yml` + `docs/`, mkdocs-material): builds clean under `--strict`.
+- PyPI release readiness: `python -m build` + `twine check` verified against a real build
+  (installed the built wheel into a clean venv and smoke-tested it); `.github/workflows/
+  release.yml` (tag-triggered, PyPI trusted publishing via OIDC, not yet used for a release).
+- Failure-injection/load/soak suites and the benchmark harness were delivered alongside
+  Phases 1–3 (see `docs/testing.md`).
+
+Remaining stretch items (not blocking, tracked for a later pass): long-transaction detection
+metric (Phase 2), psycopg pipeline mode / `unnest()` bulk strategy / a first-class RabbitMQ or
+Celery subscriber adapter (Phase 3), and a PgBouncer-compatible pooling mode.

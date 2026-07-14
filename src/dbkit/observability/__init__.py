@@ -1,15 +1,19 @@
-"""Observability: structured logging, a metrics protocol, and a Prometheus adapter (§25)."""
+"""Observability: structured logging, metrics, and OpenTelemetry tracing (§25)."""
 
 from __future__ import annotations
 
 from .logging import log_event, logger, slow_query_warning
 from .metrics import MetricsSink, NoopMetrics, try_prometheus_sink
+from .tracing import SpanHandle, Tracer, make_tracer
 
 __all__ = [
     "MetricsSink",
     "NoopMetrics",
+    "SpanHandle",
+    "Tracer",
     "log_event",
     "logger",
+    "make_tracer",
     "slow_query_warning",
     "try_prometheus_sink",
 ]

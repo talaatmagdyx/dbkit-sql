@@ -49,6 +49,54 @@ def test_connection_budget_enforced_at_startup() -> None:
         DbkitConfig.from_dict(data)
 
 
+def test_per_database_connection_budget_enforced() -> None:
+    """A single database's own budget can fail startup independently of the global one (§10.3)."""
+    data = {
+        "defaults": {"pool": {"size": 20, "max_overflow": 0}},
+        "databases": {
+            "small": {
+                "primary": {"url": "postgresql+psycopg://h/small"},
+                "connection_budget": {"maximum_per_process": 10, "enforce_at_startup": True},
+            },
+        },
+    }
+    with pytest.raises(DatabaseConfigurationError, match="database 'small'"):
+        DbkitConfig.from_dict(data)
+
+
+def test_per_database_connection_budget_only_applies_to_its_own_database() -> None:
+    data = {
+        "defaults": {"pool": {"size": 5, "max_overflow": 0}},
+        "databases": {
+            "ok": {
+                "primary": {"url": "postgresql+psycopg://h/ok"},
+                "connection_budget": {"maximum_per_process": 10, "enforce_at_startup": True},
+            },
+            "unbounded": {"primary": {"url": "postgresql+psycopg://h/unbounded"}},
+        },
+    }
+    cfg = DbkitConfig.from_dict(data)  # does not raise: "ok" is within its own 10-conn budget
+    assert cfg.databases["ok"].max_connections(cfg.defaults) == 5
+
+
+def test_max_engines_and_evict_lru_round_trip() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "max_engines": 50,
+            "evict_lru_engines": True,
+            "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+        }
+    )
+    assert cfg.max_engines == 50
+    assert cfg.evict_lru_engines is True
+
+
+def test_max_engines_defaults_to_unbounded() -> None:
+    cfg = DbkitConfig.from_dict(BASE)
+    assert cfg.max_engines is None
+    assert cfg.evict_lru_engines is False
+
+
 def test_budget_not_enforced_when_disabled() -> None:
     data = {
         "defaults": {"pool": {"size": 50, "max_overflow": 0}},

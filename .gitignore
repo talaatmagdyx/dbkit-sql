@@ -13,3 +13,4 @@ uv.lock
 .DS_Store
 .hypothesis/
 benchmarks/results/
+site/

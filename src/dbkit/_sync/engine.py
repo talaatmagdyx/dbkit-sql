@@ -12,7 +12,8 @@ engines.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import NullPool
@@ -23,6 +24,7 @@ from .._core.errors import DatabaseConfigurationError, DatabaseRoutingError
 from .._core.keys import EngineKey
 from .._core.routing import ResolvedRoute
 from .._pool import PoolInstrumentation, PoolSnapshot
+from ..observability import metrics as m
 from ..observability.metrics import MetricsSink, NoopMetrics
 from ._compat import sync_engine_of
 
@@ -34,6 +36,7 @@ class EngineEntry:
     target: TargetConfig
     instrumentation: PoolInstrumentation
     labels: dict[str, str]
+    last_used: float = field(default_factory=time.monotonic)
 
     def snapshot(self) -> PoolSnapshot:
         return self.instrumentation.snapshot(sync_engine_of(self.engine).pool)
@@ -50,7 +53,14 @@ def _connect_args(target: TargetConfig, connect_timeout: float) -> dict[str, Any
 
 
 class EngineRegistry:
-    """Creates and caches engines; enforces a maximum engine count (§9, §22.4)."""
+    """Creates and caches engines; enforces a maximum engine count (§9, §22.4).
+
+    When ``max_engines`` is set and ``evict_lru`` is True, reaching the cap evicts (disposes)
+    the least-recently-used engine instead of failing — the pattern for dynamic per-tenant
+    databases where the number of distinct tenants ever seen may be unbounded, but only a
+    bounded number should have live connections at once. The default (``evict_lru=False``)
+    is a hard cap: exceeding it is a configuration error, not a silent eviction.
+    """
 
     def __init__(
         self,
@@ -58,10 +68,12 @@ class EngineRegistry:
         *,
         metrics: MetricsSink | None = None,
         max_engines: int | None = None,
+        evict_lru: bool = False,
     ) -> None:
         self._config = config
         self._metrics = metrics or NoopMetrics()
         self._max_engines = max_engines
+        self._evict_lru = evict_lru
         self._entries: dict[str, EngineEntry] = {}
         self._lock = threading.Lock()
 
@@ -123,15 +135,19 @@ class EngineRegistry:
         key_str = str(key)
         entry = self._entries.get(key_str)
         if entry is not None:
+            entry.last_used = time.monotonic()
             return entry
         with self._lock:
             entry = self._entries.get(key_str)  # double-checked
             if entry is not None:
+                entry.last_used = time.monotonic()
                 return entry
             if self._max_engines is not None and len(self._entries) >= self._max_engines:
-                raise DatabaseConfigurationError(
-                    f"engine limit reached ({self._max_engines}); cannot create {key_str!r}"
-                )
+                if not self._evict_lru:
+                    raise DatabaseConfigurationError(
+                        f"engine limit reached ({self._max_engines}); cannot create {key_str!r}"
+                    )
+                self._evict_lru_locked()
             labels = {
                 "environment": key.environment,
                 "database": key.database,
@@ -156,6 +172,15 @@ class EngineRegistry:
             )
             self._entries[key_str] = entry
             return entry
+
+    def _evict_lru_locked(self) -> None:
+        """Dispose the least-recently-used engine. Caller must hold ``self._lock``."""
+        if not self._entries:
+            return
+        oldest_key = min(self._entries, key=lambda k: self._entries[k].last_used)
+        victim = self._entries.pop(oldest_key)
+        victim.engine.dispose()
+        self._metrics.incr(m.CONN_CLOSED, labels=victim.labels)
 
     def snapshots(self) -> list[PoolSnapshot]:
         return [entry.snapshot() for entry in self._entries.values()]

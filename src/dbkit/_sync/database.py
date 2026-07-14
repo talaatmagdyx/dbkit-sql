@@ -11,10 +11,11 @@ COPY, metrics, and graceful startup/shutdown.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
 import time
 from collections.abc import Iterator, Awaitable, Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import Table, insert
 from sqlalchemy import Connection, Engine
@@ -31,11 +32,19 @@ from .._core.errors import (
 from .._core.policies import effective_timeout
 from .._core.query import Query, coerce_statement
 from .._core.result import ExecutionResult
-from .._core.routing import DatabaseTarget, ResolvedRoute, SingleShardResolver
+from .._core.routing import (
+    DatabaseTarget,
+    ReplicaSelector,
+    ResolvedRoute,
+    RoundRobinReplicaSelector,
+    ShardResolver,
+    SingleShardResolver,
+)
 from .._pool import PoolSnapshot
 from ..observability import logging as obslog
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink, NoopMetrics
+from ..observability.tracing import Tracer, make_tracer
 from ._compat import API_LABEL, copy_from_records
 from .connection import ConnectionScope, run_execute
 from .engine import EngineRegistry, EngineEntry
@@ -43,6 +52,11 @@ from .health import HealthReport, TargetHealth, ping
 from .resilience import ConcurrencyLimiter, run_with_retries
 from .streaming import ResultStream
 from .transaction import _TransactionManager
+
+#: Task-local (safe across concurrent operations) consistency-scope override for read routing.
+_consistency_mode: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "dbkit_consistency_mode", default=None
+)
 
 
 class Database:
@@ -53,6 +67,9 @@ class Database:
         config: DbkitConfig,
         *,
         metrics: MetricsSink | None = None,
+        tracer: Tracer | None = None,
+        shard_resolver: ShardResolver | None = None,
+        replica_selector: ReplicaSelector | None = None,
     ) -> None:
         self._config = config
         if metrics is None:
@@ -62,8 +79,17 @@ class Database:
                 else NoopMetrics()
             )
         self._metrics = metrics
-        self._registry = EngineRegistry(config, metrics=self._metrics)
-        self._shards = SingleShardResolver()
+        self._tracer = tracer or make_tracer(config.defaults.observability.tracing)
+        self._registry = EngineRegistry(
+            config,
+            metrics=self._metrics,
+            max_engines=config.max_engines,
+            evict_lru=config.evict_lru_engines,
+        )
+        self._shards = shard_resolver or SingleShardResolver()
+        self._replicas = replica_selector or RoundRobinReplicaSelector(
+            {name: [r.name for r in db.replicas] for name, db in config.databases.items()}
+        )
         self._breakers: dict[str, CircuitBreaker] = {}
         self._limiters: dict[str, ConcurrencyLimiter] = {}
         self._started = False
@@ -72,10 +98,22 @@ class Database:
 
     @classmethod
     def from_config(
-        cls, config: DbkitConfig | Mapping[str, Any], *, metrics: MetricsSink | None = None
+        cls,
+        config: DbkitConfig | Mapping[str, Any],
+        *,
+        metrics: MetricsSink | None = None,
+        tracer: Tracer | None = None,
+        shard_resolver: ShardResolver | None = None,
+        replica_selector: ReplicaSelector | None = None,
     ) -> Database:
         cfg = config if isinstance(config, DbkitConfig) else DbkitConfig.from_dict(config)
-        return cls(cfg, metrics=metrics)
+        return cls(
+            cfg,
+            metrics=metrics,
+            tracer=tracer,
+            shard_resolver=shard_resolver,
+            replica_selector=replica_selector,
+        )
 
     @property
     def config(self) -> DbkitConfig:
@@ -133,7 +171,18 @@ class Database:
             if target.shard_key is not None
             else "default"
         )
-        # Phase 1: reads fall back to the primary (replica routing arrives in Phase 4).
+        # A consistency_scope(read_your_writes) override forces reads to the primary so they
+        # observe writes made earlier in the same scope (§23).
+        if target.wants_replica and db.replicas and _consistency_mode.get() is None:
+            replica_name = self._replicas.select(target.database, shard_id)
+            if replica_name is not None:
+                return ResolvedRoute(
+                    database=target.database,
+                    shard_id=shard_id,
+                    role="replica",
+                    replica_name=replica_name,
+                )
+            # Explicit fallback: selector found no replica for this database -> primary (§23).
         return ResolvedRoute(database=target.database, shard_id=shard_id, role="primary")
 
     def _entry(self, target: DatabaseTarget) -> tuple[EngineEntry, ResolvedRoute]:
@@ -263,46 +312,55 @@ class Database:
             time.monotonic(),
         )
 
-        wait_start = time.monotonic()
-        conn = self._acquire(entry.engine, labels, query_name)
-        pool_wait = time.monotonic() - wait_start
-        self._metrics.observe(m.POOL_WAIT_SECONDS, pool_wait, labels=labels)
-
-        scope = ConnectionScope(
-            conn,
-            is_postgres=self._is_postgres(entry),
-            default_timeout=timeout,
+        with self._tracer.span(
+            f"dbkit.{operation}",
+            operation_type=operation,
+            query_name=query_name,
             database=entry.key.database,
-            shard_id=entry.key.shard_id,
+            shard=entry.key.shard_id,
             role=entry.key.role,
-        )
-        op_start = time.monotonic()
-        try:
-            yield scope
-            if commit:
-                conn.commit()
-        except BaseException as exc:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            if isinstance(exc, DatabaseError):
-                self._metrics.incr(
-                    m.OP_ERRORS, labels={**labels, "error_category": exc.category.value}
-                )
-            raise
-        finally:
-            duration = time.monotonic() - op_start
-            with contextlib.suppress(Exception):
-                conn.close()
-            self._metrics.incr(m.OP_TOTAL, labels=labels)
-            self._metrics.observe(m.OP_DURATION, duration, labels=labels)
-            if duration * 1000 >= self._config.defaults.observability.slow_query_ms:
-                obslog.slow_query_warning(
-                    query_name=query_name,
-                    duration_ms=duration * 1000,
-                    threshold_ms=self._config.defaults.observability.slow_query_ms,
-                    database=entry.key.database,
-                    pool_wait_ms=pool_wait * 1000,
-                )
+        ) as span:
+            wait_start = time.monotonic()
+            conn = self._acquire(entry.engine, labels, query_name)
+            pool_wait = time.monotonic() - wait_start
+            self._metrics.observe(m.POOL_WAIT_SECONDS, pool_wait, labels=labels)
+            span.set_attribute("db.pool.wait_ms", pool_wait * 1000)
+
+            scope = ConnectionScope(
+                conn,
+                is_postgres=self._is_postgres(entry),
+                default_timeout=timeout,
+                database=entry.key.database,
+                shard_id=entry.key.shard_id,
+                role=entry.key.role,
+            )
+            op_start = time.monotonic()
+            try:
+                yield scope
+                if commit:
+                    conn.commit()
+            except BaseException as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                if isinstance(exc, DatabaseError):
+                    self._metrics.incr(
+                        m.OP_ERRORS, labels={**labels, "error_category": exc.category.value}
+                    )
+                raise
+            finally:
+                duration = time.monotonic() - op_start
+                with contextlib.suppress(Exception):
+                    conn.close()
+                self._metrics.incr(m.OP_TOTAL, labels=labels)
+                self._metrics.observe(m.OP_DURATION, duration, labels=labels)
+                if duration * 1000 >= self._config.defaults.observability.slow_query_ms:
+                    obslog.slow_query_warning(
+                        query_name=query_name,
+                        duration_ms=duration * 1000,
+                        threshold_ms=self._config.defaults.observability.slow_query_ms,
+                        database=entry.key.database,
+                        pool_wait_ms=pool_wait * 1000,
+                    )
 
     def _acquire(
         self, engine: Engine, labels: dict[str, str], query_name: str
@@ -521,8 +579,36 @@ class Database:
             lock_timeout=lock_timeout,
             query_name="transaction",
         )
-        with manager as scope:
-            yield scope
+        with self._tracer.span(
+            "dbkit.transaction",
+            operation_type="transaction",
+            query_name="transaction",
+            database=entry.key.database,
+            shard=entry.key.shard_id,
+            role=entry.key.role,
+        ):
+            with manager as scope:
+                yield scope
+
+    @contextlib.contextmanager
+    def consistency_scope(
+        self, *, mode: Literal["read_your_writes"] = "read_your_writes"
+    ) -> Iterator[None]:
+        """Force reads within this scope to the primary so they observe writes made earlier
+        in the same scope — read-your-writes over replica routing (§23)::
+
+            with db.consistency_scope(mode="read_your_writes"):
+                db.execute(write_query, target=write_target)
+                row = db.fetch_one(read_query, target=read_target)  # sees the write
+
+        The override is task-local (an asyncio ``ContextVar``), so it never leaks across
+        concurrent operations in other tasks.
+        """
+        token = _consistency_mode.set(mode)
+        try:
+            yield
+        finally:
+            _consistency_mode.reset(token)
 
     # -- health & introspection --------------------------------------------------- #
 
@@ -584,6 +670,8 @@ class Database:
             metrics=self._metrics,
             labels=labels,
             max_duration=max_duration,
+            tracer=self._tracer,
+            shard_id=entry.key.shard_id,
         )
 
     # -- bulk writes -------------------------------------------------------------- #
@@ -677,31 +765,45 @@ class Database:
         eff_timeout = timeout or self._config.defaults.transaction_timeout_seconds
 
         written = 0
-        with limiter.acquire("database"), limiter.acquire("bulk"):
-            if mode == "atomic":
-                with self.transaction(target=target, timeout=eff_timeout) as tx:
-                    for batch in batches:
-                        try:
-                            cursor = run_execute(
-                                tx.raw,
-                                statement,
-                                list(batch),
-                                timeout=eff_timeout,
-                                is_postgres=self._is_postgres(entry),
+        with self._tracer.span(
+            "dbkit.bulk_write",
+            operation_type="write",
+            query_name=query_name,
+            database=entry.key.database,
+            shard=entry.key.shard_id,
+            role=entry.key.role,
+        ) as span:
+            with limiter.acquire("database"), limiter.acquire("bulk"):
+                if mode == "atomic":
+                    with self.transaction(target=target, timeout=eff_timeout) as tx:
+                        for batch in batches:
+                            try:
+                                cursor = run_execute(
+                                    tx.raw,
+                                    statement,
+                                    list(batch),
+                                    timeout=eff_timeout,
+                                    is_postgres=self._is_postgres(entry),
+                                )
+                            except Exception as exc:
+                                raise classify(
+                                    exc, query_name=query_name, database_name=target.database
+                                ) from exc
+                            written += (
+                                cursor.rowcount
+                                if cursor.rowcount and cursor.rowcount > 0
+                                else len(batch)
                             )
-                        except Exception as exc:
-                            raise classify(
-                                exc, query_name=query_name, database_name=target.database
-                            ) from exc
-                        written += (
-                            cursor.rowcount
-                            if cursor.rowcount and cursor.rowcount > 0
-                            else len(batch)
-                        )
-            else:
-                written = self._bulk_best_effort(
-                    entry, statement, batches, mode=mode, timeout=eff_timeout, query_name=query_name
-                )
+                else:
+                    written = self._bulk_best_effort(
+                        entry,
+                        statement,
+                        batches,
+                        mode=mode,
+                        timeout=eff_timeout,
+                        query_name=query_name,
+                    )
+            span.set_attribute("db.rows_affected", written)
 
         self._metrics.incr(m.BULK_ROWS, written, labels=labels)
         return ExecutionResult(
@@ -786,17 +888,26 @@ class Database:
         written = 0
         # COPY runs on the raw driver connection, so it must sit inside an explicit
         # transaction (which begins the SQLAlchemy transaction) for the commit to persist it.
-        with (
-            limiter.acquire("database"),
-            limiter.acquire("bulk"),
-            self.transaction(target=target, timeout=eff_timeout) as tx,
-        ):
-            try:
-                written = copy_from_records(tx.raw, table, list(columns), records)
-            except Exception as exc:
-                raise classify(
-                    exc, query_name=f"{table}.copy", database_name=target.database
-                ) from exc
+        with self._tracer.span(
+            "dbkit.copy",
+            operation_type="write",
+            query_name=f"{table}.copy",
+            database=entry.key.database,
+            shard=entry.key.shard_id,
+            role=entry.key.role,
+        ) as span:
+            with (
+                limiter.acquire("database"),
+                limiter.acquire("bulk"),
+                self.transaction(target=target, timeout=eff_timeout) as tx,
+            ):
+                try:
+                    written = copy_from_records(tx.raw, table, list(columns), records)
+                except Exception as exc:
+                    raise classify(
+                        exc, query_name=f"{table}.copy", database_name=target.database
+                    ) from exc
+            span.set_attribute("db.rows_affected", written)
         self._metrics.incr(m.BULK_ROWS, written, labels=labels)
         return ExecutionResult(
             row_count=written,

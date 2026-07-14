@@ -19,9 +19,15 @@ jobs:
       - run: uv sync --extra dev
       - name: unasync drift check
         run: uv run python tools/run_unasync.py --check
-      - run: uv run ruff check src tests
-      - run: uv run ruff format --check src tests
+      - run: uv run ruff check src tests benchmarks examples
+      - run: uv run ruff format --check src tests examples
       - run: uv run mypy
+      - name: docs site builds
+        run: uv run mkdocs build --strict
+      - name: package builds and passes metadata checks
+        run: |
+          uv run python -m build
+          uv run twine check dist/*
 
   unit:
     runs-on: ubuntu-latest
