@@ -29,6 +29,7 @@ SCRIPTS = [
     "inbox_idempotent_consumer.py",
     "batch_collector.py",
     "health_and_pool.py",
+    "opentelemetry_observability.py",
     "sync_feature_parity.py",
 ]
 
