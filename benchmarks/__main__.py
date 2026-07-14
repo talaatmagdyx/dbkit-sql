@@ -15,11 +15,15 @@ from . import (
     _results,
     _stats,
     bench_batch,
+    bench_concurrency_scaling,
     bench_crud,
     bench_latency,
+    bench_observability_overhead,
     bench_overhead,
     bench_pgbouncer_compatible,
     bench_pool_exhaustion,
+    bench_shard_cardinality,
+    bench_streaming_scale,
     bench_throughput,
     bench_unnest,
 )
@@ -33,6 +37,10 @@ SUITES = {
     "unnest": bench_unnest,
     "pool_exhaustion": bench_pool_exhaustion,
     "pgbouncer_compatible": bench_pgbouncer_compatible,
+    "concurrency_scaling": bench_concurrency_scaling,
+    "observability_overhead": bench_observability_overhead,
+    "streaming_scale": bench_streaming_scale,
+    "shard_cardinality": bench_shard_cardinality,
 }
 
 

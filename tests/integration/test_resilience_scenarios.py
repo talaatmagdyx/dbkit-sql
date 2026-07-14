@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import random
 import subprocess
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -23,6 +24,8 @@ import pytest
 
 from dbkit import AsyncDatabase, DatabaseTarget, Query, sql
 from dbkit.errors import DatabaseError
+
+from ..conftest import RecordingMetrics
 
 pytestmark = pytest.mark.integration
 
@@ -375,6 +378,185 @@ async def test_circuit_opens_under_sustained_failure(base_config: dict) -> None:
         assert circuit_open, "breaker should have opened and fast-failed"
     finally:
         await db.close()
+
+
+# --- deadlock storm / retry storm scenarios (task #91, real concurrent load) ------- #
+
+
+async def test_deadlock_storm_is_classified_and_recovers_via_manual_retry(
+    base_config: dict, recording_metrics: RecordingMetrics
+) -> None:
+    """Many concurrent explicit transactions racing on two rows in opposite lock order reliably
+    trigger real PostgreSQL deadlocks (SQLSTATE 40P01) — not simulated. dbkit does NOT auto-retry
+    an explicit ``transaction()`` block (silently re-running an arbitrary user transaction body
+    would be unsafe in general — see ``should_retry``'s write-idempotence gate), so callers catch
+    and retry themselves; this test verifies that contract holds under a genuine storm: every
+    deadlock surfaces as a classified, ``retryable`` ``DatabaseDeadlockError``, the losing side's
+    connection returns to the pool clean (one rollback per loss, no leak), and a manual retry
+    loop converges to the correct final state (§14, §15)."""
+    from dbkit.errors import DatabaseDeadlockError
+
+    cfg = {
+        **base_config,
+        "defaults": {
+            **base_config["defaults"],
+            "query_timeout_seconds": 15.0,
+            "transaction_timeout_seconds": 15.0,
+            "pool": {"size": 10, "max_overflow": 10},
+        },
+    }
+    db = AsyncDatabase.from_config(cfg, metrics=recording_metrics)
+    await db.start()
+    try:
+        await db.execute(
+            sql("CREATE TABLE IF NOT EXISTS dbkit_deadlock (id int PRIMARY KEY, v int)"),
+            target=TARGET,
+        )
+        await db.execute(sql("TRUNCATE dbkit_deadlock"), target=TARGET)
+        await db.execute(
+            sql("INSERT INTO dbkit_deadlock (id, v) VALUES (1, 0), (2, 0)"), target=TARGET
+        )
+
+        deadlocks_seen: list[int] = []
+
+        async def _bump(first: int, second: int) -> None:
+            for attempt in range(50):
+                try:
+                    async with db.transaction(target=TARGET) as tx:
+                        await tx.execute(
+                            sql("UPDATE dbkit_deadlock SET v = v + 1 WHERE id = :id"),
+                            {"id": first},
+                        )
+                        await asyncio.sleep(0.05)  # widen the window for a real lock conflict
+                        await tx.execute(
+                            sql("UPDATE dbkit_deadlock SET v = v + 1 WHERE id = :id"),
+                            {"id": second},
+                        )
+                    return
+                except DatabaseDeadlockError as exc:
+                    assert exc.retryable is True
+                    deadlocks_seen.append(1)
+                    # Jittered, growing backoff desynchronizes retries -- without it, the same
+                    # losing transaction can retry in lockstep against a fresh wave of other
+                    # losers and keep colliding, exhausting its budget on bad luck under system
+                    # load rather than genuine starvation.
+                    base = min(0.02 * (attempt + 1), 0.3)
+                    await asyncio.sleep(random.uniform(base, base * 2))
+                    continue
+            pytest.fail("never recovered from repeated deadlocks within the retry budget")
+
+        # Pool capacity comfortably exceeds task count -- no pool-checkout queueing, so any
+        # blocking observed is genuine row-lock contention, not connection starvation.
+        pairs = 5
+        tasks = [asyncio.create_task(_bump(1, 2)) for _ in range(pairs)]
+        tasks += [asyncio.create_task(_bump(2, 1)) for _ in range(pairs)]
+        await asyncio.gather(*tasks)
+
+        assert deadlocks_seen, "expected at least one genuine deadlock under this concurrent load"
+
+        total = await db.fetch_value(sql("SELECT sum(v) FROM dbkit_deadlock"), target=TARGET)
+        assert total == 4 * pairs  # every task bumps both rows by 1, 2*pairs tasks total
+
+        assert recording_metrics.count("db_transaction_rollback_total") >= len(deadlocks_seen)
+        assert db.pool_status()[0].checked_out == 0
+    finally:
+        await db.close()
+
+
+async def test_retry_storm_against_intermittently_killed_backends_mostly_recovers(
+    base_config: dict, recording_metrics: RecordingMetrics
+) -> None:
+    """Many concurrent idempotent writes, retried transparently, against a backend that is
+    repeatedly killing whichever connection is actively running one of them — a genuine retry
+    storm sustained over the whole load window, not one staged failure. Verifies the retry
+    policy (§14) absorbs sustained real connection failures: the large majority of operations
+    still succeed, ``OP_RETRIES`` actually fires (proving retries genuinely landed, not that
+    kills never hit), and the pool is left clean once the chaos stops."""
+    cfg = {
+        **base_config,
+        "defaults": {
+            **base_config["defaults"],
+            "retry": {
+                "attempts": 8,
+                "initial_delay_ms": 5,
+                "max_delay_ms": 50,
+                "retry_reads": True,
+                "retry_writes": True,
+            },
+            "pool": {"size": 10, "max_overflow": 10},
+        },
+    }
+    db = AsyncDatabase.from_config(cfg, metrics=recording_metrics)
+    admin = await _make_db(base_config["databases"]["app"]["primary"]["url"])
+    await db.start()
+    try:
+        await db.execute(
+            sql("CREATE TABLE IF NOT EXISTS dbkit_retry_storm (id int PRIMARY KEY, v int)"),
+            target=TARGET,
+        )
+        await db.execute(sql("TRUNCATE dbkit_retry_storm"), target=TARGET)
+
+        upsert = Query(
+            name="chaos.retry_storm.upsert",
+            statement=sql(
+                "INSERT INTO dbkit_retry_storm (id, v) VALUES (:id, 1) "
+                "ON CONFLICT (id) DO UPDATE SET v = dbkit_retry_storm.v + 1"
+            ),
+            operation="write",
+            idempotent=True,
+        )
+
+        stop = asyncio.Event()
+
+        async def _chaos() -> None:
+            while not stop.is_set():
+                try:
+                    pid = await admin.fetch_value(
+                        sql(
+                            "SELECT pid FROM pg_stat_activity "
+                            "WHERE query ILIKE '%dbkit_retry_storm%' AND pid != pg_backend_pid() "
+                            "LIMIT 1"
+                        ),
+                        target=TARGET,
+                    )
+                    if pid:
+                        await admin.execute(
+                            sql("SELECT pg_terminate_backend(:pid)"),
+                            {"pid": pid},
+                            target=TARGET,
+                        )
+                except DatabaseError:
+                    pass
+                await asyncio.sleep(0.02)
+
+        chaos_task = asyncio.create_task(_chaos())
+
+        async def _op(i: int) -> bool:
+            try:
+                await db.execute(upsert, {"id": i % 20}, target=TARGET, timeout=5.0)
+                return True
+            except DatabaseError:
+                return False
+
+        try:
+            await asyncio.sleep(0.05)  # let chaos start landing before load begins
+            results = await asyncio.gather(*[_op(i) for i in range(200)])
+        finally:
+            stop.set()
+            await chaos_task
+
+        succeeded = sum(results)
+        assert succeeded / len(results) >= 0.9, (
+            f"expected the large majority to survive via retry, got {succeeded}/{len(results)}"
+        )
+        assert recording_metrics.count("db_operation_retries_total") > 0, (
+            "expected genuine retries to have fired during the storm"
+        )
+        await asyncio.sleep(0.2)  # allow the pool to reclaim any in-flight checkouts
+        assert db.pool_status()[0].checked_out == 0
+    finally:
+        await db.close()
+        await admin.close()
 
 
 # --- container-restart scenario (requires Docker) ----------------------------------- #
