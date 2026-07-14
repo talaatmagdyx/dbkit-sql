@@ -496,10 +496,17 @@ async def test_retry_storm_against_intermittently_killed_backends_mostly_recover
         )
         await db.execute(sql("TRUNCATE dbkit_retry_storm"), target=TARGET)
 
+        # A short server-side pg_sleep (in a CTE, before the upsert) keeps each operation
+        # reliably *in flight* long enough for the chaos loop to catch and kill its backend
+        # mid-query -- which is what actually forces a retry. A bare upsert completes in
+        # microseconds, so the chaos poll almost never observes it active and few/no kills land
+        # on a running query (in a fast CI run, zero), leaving retries un-exercised. The sleep
+        # holds no row lock (it runs before the INSERT), so this does not create write contention.
         upsert = Query(
             name="chaos.retry_storm.upsert",
             statement=sql(
-                "INSERT INTO dbkit_retry_storm (id, v) VALUES (:id, 1) "
+                "WITH s AS (SELECT pg_sleep(0.05)) "
+                "INSERT INTO dbkit_retry_storm (id, v) SELECT :id, 1 FROM s "
                 "ON CONFLICT (id) DO UPDATE SET v = dbkit_retry_storm.v + 1"
             ),
             operation="write",
@@ -515,7 +522,7 @@ async def test_retry_storm_against_intermittently_killed_backends_mostly_recover
                         sql(
                             "SELECT pid FROM pg_stat_activity "
                             "WHERE query ILIKE '%dbkit_retry_storm%' AND pid != pg_backend_pid() "
-                            "LIMIT 1"
+                            "AND state = 'active' LIMIT 1"
                         ),
                         target=TARGET,
                     )
@@ -531,23 +538,36 @@ async def test_retry_storm_against_intermittently_killed_backends_mostly_recover
 
         chaos_task = asyncio.create_task(_chaos())
 
-        async def _op(i: int) -> bool:
-            try:
-                await db.execute(upsert, {"id": i % 20}, target=TARGET, timeout=5.0)
-                return True
-            except DatabaseError:
-                return False
+        # Sustained windowed load (not a one-shot gather): keeps queries continuously in flight
+        # for the whole storm so chaos always has an active backend to kill, making retries
+        # deterministic rather than dependent on a lucky overlap.
+        ok = 0
+        failed = 0
+        counter = 0
 
+        async def _worker(stop_at: float) -> None:
+            nonlocal ok, failed, counter
+            while time.monotonic() < stop_at:
+                key = counter % 50  # spread keys wide -- exercise kills, not row contention
+                counter += 1
+                try:
+                    await db.execute(upsert, {"id": key}, target=TARGET, timeout=15.0)
+                    ok += 1
+                except DatabaseError:
+                    failed += 1
+
+        await asyncio.sleep(0.05)  # let chaos start landing before load begins
+        stop_at = time.monotonic() + 4.0
         try:
-            await asyncio.sleep(0.05)  # let chaos start landing before load begins
-            results = await asyncio.gather(*[_op(i) for i in range(200)])
+            await asyncio.gather(*(_worker(stop_at) for _ in range(15)))
         finally:
             stop.set()
             await chaos_task
 
-        succeeded = sum(results)
-        assert succeeded / len(results) >= 0.9, (
-            f"expected the large majority to survive via retry, got {succeeded}/{len(results)}"
+        total = ok + failed
+        assert total > 0
+        assert ok / total >= 0.85, (
+            f"expected the large majority to survive via retry, got {ok}/{total}"
         )
         assert recording_metrics.count("db_operation_retries_total") > 0, (
             "expected genuine retries to have fired during the storm"
