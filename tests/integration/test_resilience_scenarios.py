@@ -564,11 +564,29 @@ async def test_retry_storm_against_intermittently_killed_backends_mostly_recover
 
 async def test_recovers_after_full_database_restart() -> None:
     """A full server restart mid-life is recovered transparently on the next operation
-    (§10.6). Uses a dedicated container so the restart is isolated."""
+    (§10.6). Uses a dedicated container so the restart is isolated.
+
+    Root-caused via a live CI reproduction, not assumed: an earlier version of this test let
+    testcontainers assign a random host port and restarted the container with
+    ``container.restart()``. That reliably (on both a local Docker install and a fresh GitHub
+    Actions runner) reassigned a *different* random host port after the restart (confirmed by
+    comparing ``container.attrs["NetworkSettings"]["Ports"]`` before/after — e.g. 32769 became
+    32770) while both the container and PostgreSQL inside it were completely healthy the whole
+    time. That's a real Docker port-publishing behavior, not a dbkit or Postgres bug — but it
+    invalidated the test: `AsyncDatabase` binds a fixed engine URL at construction and has no way
+    to follow an address that moved, and a real production Postgres restart (`pg_ctl restart`/
+    systemd) never changes the listening address in the first place. Pinning the container to a
+    fixed host port makes the test match that real scenario instead of an artifact of
+    testcontainers' random-port allocation.
+    """
     _skip_no_docker()
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("postgres:16", driver="psycopg") as pg:
+    fixed_host_port = 55499
+    container_builder = PostgresContainer("postgres:16", driver="psycopg").with_bind_ports(
+        5432, fixed_host_port
+    )
+    with container_builder as pg:
         dsn = pg.get_connection_url()
         db = await _make_db(dsn, size=2, max_overflow=2, recycle_seconds=1)
         try:
