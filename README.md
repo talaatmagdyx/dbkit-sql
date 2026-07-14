@@ -16,7 +16,7 @@
   <a href="https://talaatmagdyx.github.io/dbkit-sql/">
     <img src="https://img.shields.io/badge/docs-mkdocs--material-blue.svg" alt="Docs">
   </a>
-  <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0">
+  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Status: alpha">
 </p>
@@ -63,26 +63,18 @@
 
 ## Status & quality bar
 
-**Alpha** — no PyPI release yet, no production track record. Phases 1–5 are functionally
-complete: core runtime, resilience (retries, circuit breaker, concurrency limits),
-high-throughput paths (streaming, bulk insert/upsert, PostgreSQL COPY, effectively-once
-consumer helpers via a transactional inbox), multi-database & sharding, and production
-hardening (OpenTelemetry tracing, CLI, docs site, release automation).
+**Alpha.** Phases 1–5 are functionally complete: core runtime, resilience (retries, circuit
+breaker, concurrency limits), high-throughput paths (streaming, bulk insert/upsert, PostgreSQL
+COPY, effectively-once consumer helpers via a transactional inbox), multi-database & sharding,
+and production hardening (OpenTelemetry tracing, CLI, docs site, release automation).
 
-That completeness claim isn't just asserted — it's backed by two standing internal audits, kept
-up to date and re-scored as fixes land, not written once and forgotten:
-
-- [`PRODUCTION_READINESS_REVIEW.md`](PRODUCTION_READINESS_REVIEW.md) — correctness, security,
-  and operational-gap review. **9.5 / 10.** Every finding a code or doc change could resolve has
-  been fixed and verified against real PostgreSQL; the score is held back by exactly one thing
-  no review pass can manufacture — real production runtime.
-- [`PERFORMANCE_REVIEW.md`](PERFORMANCE_REVIEW.md) — throughput, latency, memory, and
-  failure-mode behavior under load. **9.0 / 10.** Backed by real load tests against live
-  PostgreSQL (concurrency scaling, deadlock/retry storms, streaming memory bounds, multi-process
-  connection-budget validation), not estimates.
-
-Both documents are blunt about what's still missing (a real multi-node deployment, multi-day
-soak load) rather than rounding up. Read them before betting anything important on this.
+That completeness claim isn't just asserted: every High/Medium correctness and performance
+finding raised during development was fixed and verified against real PostgreSQL (not asserted
+from reading the source), and load-tested behavior (concurrency scaling, deadlock/retry storms,
+streaming memory bounds, multi-process connection-budget validation) is backed by benchmark
+scripts under `benchmarks/` and tests under `tests/integration/`, not estimates. What's still
+missing, honestly: a real production track record, a genuine multi-node deployment, and
+multi-day sustained load — none of which a test suite or benchmark run can substitute for.
 dbkit trusts the `DatabaseTarget`/shard key you give it — tenant/shard authorization is your
 application's responsibility, not dbkit's.
 
@@ -237,4 +229,4 @@ Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the g
 
 ## License
 
-[Apache-2.0](LICENSE).
+[MIT](LICENSE).
