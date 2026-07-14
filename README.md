@@ -10,10 +10,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/talaatmagdyx/dbkit/actions/workflows/ci.yml">
-    <img src="https://github.com/talaatmagdyx/dbkit/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <a href="https://github.com/talaatmagdyx/dbkit-sql/actions/workflows/ci.yml">
+    <img src="https://github.com/talaatmagdyx/dbkit-sql/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://talaatmagdyx.github.io/dbkit/">
+  <a href="https://talaatmagdyx.github.io/dbkit-sql/">
     <img src="https://img.shields.io/badge/docs-mkdocs--material-blue.svg" alt="Docs">
   </a>
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0">
@@ -150,7 +150,7 @@ db.close()
 ## Documentation
 
 The full docs site (API reference, configuration, CLI, dashboards/alerting, troubleshooting) is
-published at **[talaatmagdyx.github.io/dbkit](https://talaatmagdyx.github.io/dbkit/)**. Highlights:
+published at **[talaatmagdyx.github.io/dbkit-sql](https://talaatmagdyx.github.io/dbkit-sql/)**. Highlights:
 
 | Topic | Where |
 |---|---|
