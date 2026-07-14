@@ -1,0 +1,61 @@
+# Dependency vulnerability scanning + static analysis + SBOM.
+#
+# - `pip-audit` checks installed dependencies against the OSV/PyPA advisory
+#   databases and fails the job on a known vulnerability.
+# - CodeQL performs static analysis on the Python source for common security
+#   issues (injection, unsafe deserialization, etc.).
+# - pip-audit's CycloneDX exporter produces a software bill of materials
+#   (every installed dependency + version) as a build artifact, generated
+#   only after the audit step above passes.
+#
+# All run on every push/PR to main and on a weekly schedule so a newly
+# disclosed CVE in an existing dependency is caught even without a code
+# change.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, Monday 04:00 UTC.
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+      - name: pip-audit
+        run: |
+          uv pip install pip-audit
+          # --skip-editable: dbkit itself is installed editable and (until the
+          # first PyPI release is public) can't be audited against the advisory
+          # DBs. No --strict: it escalates that (intentional) skip to an error;
+          # known vulnerabilities still fail the job without it.
+          uv run python -m pip_audit --skip-editable
+      - name: Generate SBOM (CycloneDX)
+        run: uv run python -m pip_audit --skip-editable --format=cyclonedx-json --output=sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+      - uses: github/codeql-action/analyze@v3
