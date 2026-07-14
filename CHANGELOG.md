@@ -6,7 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-### Added — real load-test evidence for the performance review (`PERFORMANCE_REVIEW.md`)
+## [0.1.0] - 2026-07-15
+
+First public release on PyPI as `dbkit-sql` (import name: `dbkit`).
+
+### Added — real load-test evidence for the performance review
 - Six new benchmark/test scripts run against live PostgreSQL, replacing estimates with measured
   results: `benchmarks/bench_concurrency_scaling.py` (concurrency 1→500, both pool configs —
   found throughput plateaus at ~3.6-3.8k ops/s regardless of pool capacity 15 vs. 100, correcting
