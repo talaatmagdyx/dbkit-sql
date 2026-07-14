@@ -3,7 +3,7 @@
 dbkit follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), with the
 current pre-1.0 caveats below made explicit.
 
-## Pre-1.0 (current: `0.1.0.dev0`, alpha)
+## Pre-1.0 (current: `0.1.0`, alpha)
 
 Per SemVer, a `0.y.z` version makes **no compatibility guarantee** — any `0.y` bump may contain
 breaking changes. In practice, dbkit tries to be more conservative than the spec strictly
