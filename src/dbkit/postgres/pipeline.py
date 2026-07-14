@@ -31,6 +31,7 @@ def _require_psycopg(driver_conn: Any) -> None:
 
 @contextlib.asynccontextmanager
 async def pipeline_scope_async(sa_conn: Any) -> AsyncIterator[None]:
+    """Enter psycopg pipeline mode on ``sa_conn``'s raw driver connection (async)."""
     raw = await sa_conn.get_raw_connection()
     driver_conn = raw.driver_connection
     _require_psycopg(driver_conn)
@@ -40,6 +41,7 @@ async def pipeline_scope_async(sa_conn: Any) -> AsyncIterator[None]:
 
 @contextlib.contextmanager
 def pipeline_scope_sync(sa_conn: Any) -> Iterator[None]:
+    """Enter psycopg pipeline mode on ``sa_conn``'s raw driver connection (sync)."""
     driver_conn = sa_conn.connection.driver_connection
     _require_psycopg(driver_conn)
     with driver_conn.pipeline():

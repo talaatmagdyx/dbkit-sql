@@ -22,6 +22,8 @@ InsertStrategy = Literal["execute_many", "unnest"]
 
 @dataclass(frozen=True, slots=True)
 class BulkLimits:
+    """The three independent caps a bulk batch is sized against (§19.1)."""
+
     max_rows: int = 1000
     max_params: int = PG_MAX_BIND_PARAMS
     max_payload_bytes: int | None = None

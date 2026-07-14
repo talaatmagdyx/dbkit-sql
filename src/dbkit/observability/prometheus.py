@@ -15,6 +15,7 @@ class PrometheusMetrics:
     """
 
     def __init__(self, namespace: str = "dbkit", registry: Any = None) -> None:
+        """Raises ``RuntimeError`` if ``prometheus-client`` isn't installed."""
         try:
             from prometheus_client import REGISTRY, Counter, Gauge, Histogram
         except ImportError as exc:  # pragma: no cover
@@ -58,10 +59,13 @@ class PrometheusMetrics:
         return self._histograms[name]
 
     def incr(self, name: str, value: float = 1.0, labels: Labels | None = None) -> None:
+        """Increment the named Prometheus ``Counter``."""
         self._counter(name).labels(**self._fill(labels)).inc(value)
 
     def observe(self, name: str, value: float, labels: Labels | None = None) -> None:
+        """Record an observation on the named Prometheus ``Histogram``."""
         self._histogram(name).labels(**self._fill(labels)).observe(value)
 
     def gauge(self, name: str, value: float, labels: Labels | None = None) -> None:
+        """Set the named Prometheus ``Gauge``."""
         self._gauge_metric(name).labels(**self._fill(labels)).set(value)

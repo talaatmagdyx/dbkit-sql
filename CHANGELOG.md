@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — full API reference docs
+- `mkdocstrings[python]` wired into the docs site (`docs/api/*.md`): every public class/method
+  across the facade, config, query/routing, errors, observability, and integrations modules is
+  now rendered from its docstring, always in sync with the code.
+- Filled in every previously-undocumented public method/class across the codebase (config
+  validation, error classes, shard/replica resolvers, the async/sync facades, transaction and
+  connection scopes, engine registry, health checks, streaming, the circuit breaker, pool
+  instrumentation, the CLI, and the OTel/Prometheus metrics adapters).
+
 ### Added — full OpenTelemetry options (traces, metrics, log correlation)
 - Tracing spans now carry `kind=SpanKind.CLIENT`, per the OTel semantic conventions for
   database client operations (previously defaulted to `INTERNAL`).
@@ -25,6 +34,13 @@ All notable changes to this project are documented here. The format is based on
   `opentelemetry.metrics` instead of Prometheus — an alternative for deployments that export
   metrics via OTLP rather than scraping. Requires `opentelemetry-api>=1.26` (for the
   synchronous Metrics `Gauge` instrument).
+- Fixed a hot-path cost in structured logging: the trace/log correlation lookup now checks
+  OTel availability once at import time instead of attempting `import opentelemetry` on every
+  log call — a real cost when OTel isn't installed, since failed imports aren't cached in
+  `sys.modules` and would otherwise re-walk `sys.path` on every query/transaction log event.
+- `examples/opentelemetry_observability.py`: wires a real OTel SDK (`TracerProvider` +
+  `MeterProvider`, both application-owned and injected into dbkit) and prints finished spans,
+  collected metrics, and log lines carrying the matching `trace_id`/`span_id`.
 
 ### Changed — use SQLAlchemy's native mechanisms instead of reimplementing them
 - Cardinality enforcement (`fetch_one`/`fetch_optional`/`fetch_value`/`fetch_values`) now

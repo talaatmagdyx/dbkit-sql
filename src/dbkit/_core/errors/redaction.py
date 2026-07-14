@@ -49,6 +49,7 @@ def redact_dsn(value: str) -> str:
 
 
 def is_sensitive_key(key: str) -> bool:
+    """Whether ``key``'s name suggests it holds a secret (password, token, etc.), by substring."""
     lowered = key.lower()
     return any(hint in lowered for hint in _SENSITIVE_KEY_HINTS)
 

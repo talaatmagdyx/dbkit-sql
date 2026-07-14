@@ -65,6 +65,11 @@ class DatabaseError(Exception):
         sqlstate: str | None = None,
         original: BaseException | None = None,
     ) -> None:
+        """Any keyword left ``None`` falls back to the subclass default or is left unset.
+
+        ``original`` and the routing/query context fields are for internal inspection and
+        logging — never interpolated into the exception message itself (§13.4, §29).
+        """
         self.code = code or type(self).code
         self.category = category or type(self).category
         self.retryable = type(self).retryable if retryable is None else retryable
@@ -128,11 +133,15 @@ class DatabaseError(Exception):
 
 
 class DatabaseConfigurationError(DatabaseError):
+    """Invalid or missing configuration, raised at startup before any connection is made."""
+
     code = "configuration_error"
     category = ErrorCategory.CONFIGURATION
 
 
 class DatabaseRoutingError(DatabaseError):
+    """A shard/replica/target could not be resolved (e.g. an unmapped shard key)."""
+
     code = "routing_error"
     category = ErrorCategory.ROUTING
 
@@ -141,18 +150,24 @@ class DatabaseRoutingError(DatabaseError):
 
 
 class DatabaseUnavailableError(DatabaseError):
+    """The database is reachable but not currently able to serve requests."""
+
     code = "unavailable"
     category = ErrorCategory.AVAILABILITY
     retryable = True
 
 
 class DatabaseConnectionError(DatabaseError):
+    """The connection could not be established or was lost mid-operation."""
+
     code = "connection_error"
     category = ErrorCategory.CONNECTION
     retryable = True
 
 
 class DatabasePoolTimeoutError(DatabaseError):
+    """No pooled connection became available before the pool checkout timeout elapsed."""
+
     code = "pool_timeout"
     category = ErrorCategory.POOL
     retryable = True
@@ -162,23 +177,31 @@ class DatabasePoolTimeoutError(DatabaseError):
 
 
 class DatabaseQueryTimeoutError(DatabaseError):
+    """A single statement exceeded its query timeout."""
+
     code = "query_timeout"
     category = ErrorCategory.TIMEOUT
 
 
 class DatabaseLockTimeoutError(DatabaseError):
+    """A statement gave up waiting on a row/table lock (PostgreSQL ``lock_timeout``)."""
+
     code = "lock_timeout"
     category = ErrorCategory.LOCK
     retryable = True
 
 
 class DatabaseDeadlockError(DatabaseError):
+    """PostgreSQL detected and broke a deadlock by aborting this transaction."""
+
     code = "deadlock"
     category = ErrorCategory.LOCK
     retryable = True
 
 
 class DatabaseSerializationError(DatabaseError):
+    """A ``SERIALIZABLE``/``REPEATABLE READ`` transaction failed to serialize; safe to retry."""
+
     code = "serialization_failure"
     category = ErrorCategory.CONCURRENCY
     retryable = True
@@ -188,23 +211,33 @@ class DatabaseSerializationError(DatabaseError):
 
 
 class DatabaseIntegrityError(DatabaseError):
+    """Base class for constraint violations (SQLSTATE class 23)."""
+
     code = "integrity_error"
     category = ErrorCategory.INTEGRITY
 
 
 class DatabaseUniqueViolationError(DatabaseIntegrityError):
+    """A unique/primary-key constraint rejected the row."""
+
     code = "unique_violation"
 
 
 class DatabaseForeignKeyViolationError(DatabaseIntegrityError):
+    """A foreign-key constraint rejected the row."""
+
     code = "foreign_key_violation"
 
 
 class DatabaseNotNullViolationError(DatabaseIntegrityError):
+    """A ``NOT NULL`` column was given a null value."""
+
     code = "not_null_violation"
 
 
 class DatabaseCheckViolationError(DatabaseIntegrityError):
+    """A ``CHECK`` constraint rejected the row."""
+
     code = "check_violation"
 
 
@@ -212,20 +245,28 @@ class DatabaseCheckViolationError(DatabaseIntegrityError):
 
 
 class DatabaseProgrammingError(DatabaseError):
+    """The statement itself is invalid (bad SQL, wrong types, undefined objects)."""
+
     code = "programming_error"
     category = ErrorCategory.PROGRAMMING
 
 
 class DatabaseSyntaxError(DatabaseProgrammingError):
+    """The statement failed to parse."""
+
     code = "syntax_error"
 
 
 class DatabasePermissionError(DatabaseError):
+    """The connected role lacks the privilege required for this operation."""
+
     code = "permission_denied"
     category = ErrorCategory.PERMISSION
 
 
 class DatabaseReadOnlyError(DatabaseError):
+    """A write was attempted against a read-only transaction or replica target."""
+
     code = "read_only_transaction"
     category = ErrorCategory.PERMISSION
 
@@ -234,6 +275,8 @@ class DatabaseReadOnlyError(DatabaseError):
 
 
 class DatabaseTransactionError(DatabaseError):
+    """A transaction-lifecycle operation (begin/commit/rollback/savepoint) failed."""
+
     code = "transaction_error"
     category = ErrorCategory.TRANSACTION
 
@@ -245,12 +288,15 @@ class DatabaseCommitUnknownError(DatabaseError):
     category = ErrorCategory.TRANSACTION
 
     def __init__(self, message: str = "", **kwargs: Any) -> None:
+        """Always marks ``transaction_state_unknown``/``connection_invalidated`` (§15)."""
         kwargs.setdefault("transaction_state_unknown", True)
         kwargs.setdefault("connection_invalidated", True)
         super().__init__(message, **kwargs)
 
 
 class DatabaseCancellationError(DatabaseError):
+    """The operation was cancelled (e.g. by ``asyncio`` task cancellation or a client timeout)."""
+
     code = "cancelled"
     category = ErrorCategory.CANCELLED
 
@@ -259,11 +305,15 @@ class DatabaseCancellationError(DatabaseError):
 
 
 class DatabaseResultError(DatabaseError):
+    """A cardinality expectation (exactly-one / at-most-one / scalar) was violated."""
+
     code = "result_error"
     category = ErrorCategory.RESULT
 
 
 class DatabaseMappingError(DatabaseError):
+    """A row could not be mapped to the requested ``map_to`` type."""
+
     code = "mapping_error"
     category = ErrorCategory.RESULT
 
@@ -272,17 +322,23 @@ class DatabaseMappingError(DatabaseError):
 
 
 class DatabaseCircuitOpenError(DatabaseError):
+    """The circuit breaker for this database/shard/role is open; the call was short-circuited."""
+
     code = "circuit_open"
     category = ErrorCategory.RESILIENCE
     retryable = True
 
 
 class DatabaseOverloadedError(DatabaseError):
+    """A concurrency limiter rejected the call because its semaphore was exhausted."""
+
     code = "overloaded"
     category = ErrorCategory.CONCURRENCY
     retryable = True
 
 
 class DatabaseUnsupportedOperationError(DatabaseError):
+    """The requested operation isn't supported by the current dialect/driver/configuration."""
+
     code = "unsupported_operation"
     category = ErrorCategory.UNSUPPORTED

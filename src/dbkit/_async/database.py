@@ -70,6 +70,11 @@ class AsyncDatabase:
         shard_resolver: ShardResolver | None = None,
         replica_selector: ReplicaSelector | None = None,
     ) -> None:
+        """Build a facade from an already-validated :class:`DbkitConfig`.
+
+        Prefer :meth:`from_config` unless you need to pass a config object you built/validated
+        yourself. Does not connect to any database — call :meth:`start` before use.
+        """
         self._config = config
         if metrics is None:
             metrics = (
@@ -105,6 +110,8 @@ class AsyncDatabase:
         shard_resolver: ShardResolver | None = None,
         replica_selector: ReplicaSelector | None = None,
     ) -> AsyncDatabase:
+        """Build a facade from a :class:`DbkitConfig` or a plain dict (validated via
+        :meth:`DbkitConfig.from_dict`). The usual entry point."""
         cfg = config if isinstance(config, DbkitConfig) else DbkitConfig.from_dict(config)
         return cls(
             cfg,
@@ -116,10 +123,12 @@ class AsyncDatabase:
 
     @property
     def config(self) -> DbkitConfig:
+        """The validated configuration this facade was built from."""
         return self._config
 
     @property
     def engine_count(self) -> int:
+        """Number of live SQLAlchemy engines currently held (one per target)."""
         return self._registry.count
 
     # -- lifecycle ---------------------------------------------------------------- #
@@ -153,10 +162,12 @@ class AsyncDatabase:
         obslog.log_event(logging.INFO, "database.closed")
 
     async def __aenter__(self) -> AsyncDatabase:
+        """``async with AsyncDatabase(...) as db:`` — calls :meth:`start`."""
         await self.start()
         return self
 
     async def __aexit__(self, *exc: object) -> None:
+        """Calls :meth:`close`."""
         await self.close()
 
     # -- routing ------------------------------------------------------------------ #
@@ -387,6 +398,11 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> list[Any]:
+        """Run a one-shot read, acquiring and releasing its own connection (§11.1).
+
+        Returns every row, mapped to ``map_to``, with no cardinality constraint. Retries and
+        the circuit breaker apply per the resolved ``target``'s policy.
+        """
         rows: list[Any] = await self._execute_with_resilience(
             target,
             query,
@@ -407,6 +423,11 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> Any:
+        """Run a one-shot read expecting exactly one row.
+
+        Raises :class:`~dbkit.errors.DatabaseResultError` if zero or more than one row comes
+        back (via SQLAlchemy's own ``Result.one()``).
+        """
         return await self._execute_with_resilience(
             target,
             query,
@@ -426,6 +447,7 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> Any | None:
+        """Run a one-shot read expecting zero or one row; ``None`` if empty."""
         return await self._execute_with_resilience(
             target,
             query,
@@ -444,6 +466,7 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> Any:
+        """Run a one-shot read expecting exactly one row and return its first column."""
         return await self._execute_with_resilience(
             target,
             query,
@@ -462,6 +485,7 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> list[Any]:
+        """Run a one-shot read and return the first column of every row."""
         values: list[Any] = await self._execute_with_resilience(
             target,
             query,
@@ -483,6 +507,7 @@ class AsyncDatabase:
         timeout: float | None = None,
         deadline: float | None = None,
     ) -> ExecutionResult:
+        """Run a one-shot write/DDL statement, auto-committed on success (§11.1)."""
         query_name, _, _ = self._query_meta(query)
         start = time.monotonic()
         row_count = await self._execute_with_resilience(
@@ -625,6 +650,7 @@ class AsyncDatabase:
     # -- health & introspection --------------------------------------------------- #
 
     async def health(self) -> HealthReport:
+        """Readiness check: ``SELECT 1`` against every required target (§26)."""
         targets: list[TargetHealth] = []
         ready = True
         for name, db in self._config.databases.items():
@@ -642,6 +668,7 @@ class AsyncDatabase:
         return HealthReport(live=True, ready=ready, targets=targets)
 
     def pool_status(self) -> list[PoolSnapshot]:
+        """A point-in-time snapshot of every currently live engine's connection pool."""
         return self._registry.snapshots()
 
     # -- streaming ---------------------------------------------------------------- #
@@ -974,10 +1001,13 @@ class _BulkPlan:
     """
 
     def __init__(self, statement: Any, *, columns: Sequence[str] | None) -> None:
+        """``columns`` non-``None`` selects the ``unnest`` strategy; ``None`` selects
+        ``execute_many``."""
         self._statement = statement
         self._columns = columns
 
     def for_batch(self, batch: Sequence[Mapping[str, Any]]) -> tuple[Any, Any]:
+        """The ``(statement, params)`` pair to execute for this batch."""
         if self._columns is not None:
             return self._statement, unnest_mod.columnar_params(batch, self._columns)
         return self._statement, list(batch)

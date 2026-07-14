@@ -185,6 +185,7 @@ def query_list() -> None:
 
 
 def main() -> None:
+    """Entry point for the ``dbkit`` console script."""
     app()
 
 

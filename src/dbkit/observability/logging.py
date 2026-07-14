@@ -84,6 +84,7 @@ def slow_query_warning(
     pool_wait_ms: float | None = None,
     rows: int | None = None,
 ) -> None:
+    """Emit a ``database.query.slow`` warning (caller decides whether the threshold was hit)."""
     log_event(
         logging.WARNING,
         "database.query.slow",

@@ -21,6 +21,7 @@ class OTelMetrics:
     """
 
     def __init__(self, *, meter_provider: Any = None, meter_name: str = "dbkit") -> None:
+        """Raises ``RuntimeError`` if ``opentelemetry-api`` isn't installed."""
         try:
             from opentelemetry import metrics
         except ImportError as exc:  # pragma: no cover
@@ -56,10 +57,13 @@ class OTelMetrics:
         return self._gauges[name]
 
     def incr(self, name: str, value: float = 1.0, labels: Labels | None = None) -> None:
+        """Add ``value`` to the named OTel counter instrument."""
         self._counter(name).add(value, attributes=self._attributes(labels))
 
     def observe(self, name: str, value: float, labels: Labels | None = None) -> None:
+        """Record ``value`` on the named OTel histogram instrument."""
         self._histogram(name).record(value, attributes=self._attributes(labels))
 
     def gauge(self, name: str, value: float, labels: Labels | None = None) -> None:
+        """Set the named OTel gauge instrument to ``value``."""
         self._gauge(name).set(value, attributes=self._attributes(labels))

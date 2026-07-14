@@ -28,6 +28,8 @@ from ._compat import sync_engine_of
 
 @dataclass
 class EngineEntry:
+    """One cached engine plus the bookkeeping :class:`AsyncEngineRegistry` needs for it."""
+
     key: EngineKey
     engine: AsyncEngine
     target: TargetConfig
@@ -36,6 +38,7 @@ class EngineEntry:
     last_used: float = field(default_factory=time.monotonic)
 
     def snapshot(self) -> PoolSnapshot:
+        """This engine's current connection-pool snapshot."""
         return self.instrumentation.snapshot(sync_engine_of(self.engine).pool)
 
 
@@ -76,6 +79,7 @@ class AsyncEngineRegistry:
         max_engines: int | None = None,
         evict_lru: bool = False,
     ) -> None:
+        """A registry backed by ``config``, empty until :meth:`get` creates engines lazily."""
         self._config = config
         self._metrics = metrics or NoopMetrics()
         self._max_engines = max_engines
@@ -85,6 +89,7 @@ class AsyncEngineRegistry:
 
     @property
     def count(self) -> int:
+        """Number of currently live engines."""
         return len(self._entries)
 
     def _target_for(self, route: ResolvedRoute) -> TargetConfig:
@@ -136,6 +141,7 @@ class AsyncEngineRegistry:
             ) from exc
 
     async def get(self, route: ResolvedRoute) -> EngineEntry:
+        """The cached engine for ``route``, creating (and, if needed, evicting) one lazily."""
         target = self._target_for(route)
         key = self._key_for(route, target)
         key_str = str(key)
@@ -189,9 +195,11 @@ class AsyncEngineRegistry:
         self._metrics.incr(m.CONN_CLOSED, labels=victim.labels)
 
     def snapshots(self) -> list[PoolSnapshot]:
+        """A pool snapshot for every currently live engine."""
         return [entry.snapshot() for entry in self._entries.values()]
 
     async def dispose_all(self) -> None:
+        """Dispose every engine and clear the registry (called by ``AsyncDatabase.close``)."""
         async with self._lock:
             entries = list(self._entries.values())
             self._entries.clear()

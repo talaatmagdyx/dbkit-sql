@@ -19,6 +19,8 @@ T = TypeVar("T")
 
 
 class BatchCollector(Generic[T]):
+    """Aggregates items across concurrent producers and flushes them as one batch (§17.1)."""
+
     def __init__(
         self,
         flush: Callable[[Sequence[T]], Awaitable[None]],
@@ -26,6 +28,8 @@ class BatchCollector(Generic[T]):
         max_size: int = 1000,
         max_delay_ms: float = 50.0,
     ) -> None:
+        """``flush`` is called with the buffered batch whenever ``max_size``/``max_delay_ms``
+        is reached; it should perform the batched write (e.g. ``db.insert_many``)."""
         if max_size < 1:
             raise ValueError("max_size must be >= 1")
         self._flush_cb = flush

@@ -104,5 +104,6 @@ def build_mapper(map_to: Any) -> RowMapper:
 
 
 def map_rows(rows: Sequence[RowMapping], map_to: Any) -> list[Any]:
+    """Map every row in ``rows`` to ``map_to`` (see :func:`build_mapper` for accepted values)."""
     mapper = build_mapper(map_to)
     return [mapper(r) for r in rows]

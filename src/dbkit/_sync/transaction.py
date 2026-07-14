@@ -44,6 +44,7 @@ class TransactionScope(ConnectionScope):
         shard_id: str,
         role: str,
     ) -> None:
+        """Wrap an already-``BEGIN``'d connection; not constructed directly by applications."""
         super().__init__(
             conn,
             is_postgres=is_postgres,
@@ -103,6 +104,7 @@ class _TransactionManager:
         span: Any = None,
         deferrable: bool = False,
     ) -> None:
+        """Constructed by ``Database.transaction(...)``; not built directly by applications."""
         self._engine = engine
         self._is_postgres = is_postgres
         self._default_timeout = default_timeout
@@ -125,6 +127,7 @@ class _TransactionManager:
         self._started_at: float = 0.0
 
     def __enter__(self) -> TransactionScope:
+        """Acquire a connection, apply isolation/read-only/timeout settings, and ``BEGIN``."""
         try:
             self._conn = self._engine.connect()
             # Isolation level / read-only / deferrable must be set *before* BEGIN — SQLAlchemy's
@@ -179,6 +182,7 @@ class _TransactionManager:
             conn.execute(text(f"SET LOCAL lock_timeout = {ms}"))
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        """Commit on clean exit, else roll back; records metrics/logs/span for the outcome."""
         assert self._conn is not None
         outcome = "commit"
         try:

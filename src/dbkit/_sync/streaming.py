@@ -47,6 +47,7 @@ class ResultStream:
         tracer: Tracer | None = None,
         shard_id: str | None = None,
     ) -> None:
+        """Constructed by ``Database.stream(...)``; not intended to be built directly."""
         self._engine = engine
         self._statement = statement
         self._params = params
@@ -68,6 +69,7 @@ class ResultStream:
         self._span: Any = None
 
     def __enter__(self) -> ResultStream:
+        """Open the underlying connection and server-side cursor."""
         if self._tracer is not None:
             self._span_cm = self._tracer.span(
                 "dbkit.stream",
@@ -90,9 +92,11 @@ class ResultStream:
         return self
 
     def __iter__(self) -> ResultStream:
+        """Returns ``self`` — the stream is its own iterator."""
         return self
 
     def __next__(self) -> Any:
+        """The next mapped row, or raise :class:`StopIteration`/a timeout error."""
         assert self._gen is not None
         if (
             self._max_duration is not None
@@ -117,6 +121,7 @@ class ResultStream:
         return self._mapper(row)
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        """Release the connection/cursor unconditionally; never suppresses the exception."""
         self._cleanup()
         if self._span_cm is not None:
             if self._span is not None:

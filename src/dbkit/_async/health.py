@@ -18,6 +18,8 @@ from ._compat import timeout_scope
 
 @dataclass
 class TargetHealth:
+    """Readiness result for one required target."""
+
     key: str
     healthy: bool
     error: str | None = None
@@ -25,11 +27,14 @@ class TargetHealth:
 
 @dataclass
 class HealthReport:
+    """The overall result of :meth:`~dbkit.AsyncDatabase.health`."""
+
     live: bool
     ready: bool
     targets: list[TargetHealth] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
+        """A JSON-serializable representation, e.g. for the CLI/HTTP health endpoint."""
         return {
             "live": self.live,
             "ready": self.ready,

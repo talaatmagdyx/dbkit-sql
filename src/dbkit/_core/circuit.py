@@ -40,6 +40,8 @@ def counts_as_failure(error: DatabaseError) -> bool:
 
 
 class CircuitState(enum.Enum):
+    """A :class:`CircuitBreaker`'s current state."""
+
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
@@ -56,6 +58,7 @@ class CircuitBreaker:
         open_seconds: float = 10.0,
         half_open_max_calls: int = 2,
     ) -> None:
+        """A new breaker, starting ``CLOSED``."""
         self.failure_threshold = failure_threshold
         self.window_seconds = window_seconds
         self.open_seconds = open_seconds
@@ -92,12 +95,14 @@ class CircuitBreaker:
     # -- feedback ----------------------------------------------------------------- #
 
     def on_success(self, now: float) -> None:
+        """Record a successful call: closes the breaker from HALF_OPEN, else prunes the window."""
         if self._state == CircuitState.HALF_OPEN:
             self._reset()
         elif self._state == CircuitState.CLOSED:
             self._prune(now)
 
     def on_failure(self, now: float) -> None:
+        """Record a failing call: re-opens from HALF_OPEN, or opens once the threshold is hit."""
         if self._state == CircuitState.HALF_OPEN:
             self._open(now)
             return

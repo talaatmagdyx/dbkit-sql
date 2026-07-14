@@ -52,6 +52,7 @@ def effective_timeout(
 
 
 def is_idempotent(query: Query | None, idempotent_override: bool | None) -> bool:
+    """Whether the call may be retried: ``idempotent_override`` if given, else the query's."""
     if idempotent_override is not None:
         return idempotent_override
     return bool(query and query.idempotent)

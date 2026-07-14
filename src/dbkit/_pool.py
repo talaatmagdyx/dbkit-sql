@@ -42,14 +42,17 @@ class PoolSnapshot:
 
     @property
     def total_capacity(self) -> int:
+        """``size + max_overflow`` — the most connections this pool will ever open."""
         return self.size + max(self.max_overflow, 0)
 
     @property
     def utilization(self) -> float:
+        """``checked_out / total_capacity``, or ``0.0`` if capacity is unbounded/zero."""
         cap = self.total_capacity
         return (self.checked_out / cap) if cap else 0.0
 
     def to_dict(self) -> dict[str, Any]:
+        """A JSON-serializable representation, e.g. for the CLI's ``pools`` command."""
         return {
             "key": self.key,
             "size": self.size,
@@ -82,6 +85,7 @@ class PoolInstrumentation:
         long_hold_warning_seconds: float,
         metrics: MetricsSink | None = None,
     ) -> None:
+        """Create instrumentation for one engine; call :meth:`attach` to start observing it."""
         self.key = key
         self._labels = labels
         self._long_hold = long_hold_warning_seconds
@@ -151,6 +155,7 @@ class PoolInstrumentation:
     # -- introspection ------------------------------------------------------------ #
 
     def longest_current_hold(self) -> float:
+        """Seconds the longest-held currently-checked-out connection has been held, or 0.0."""
         now = time.monotonic()
         with self._lock:
             if not self._checked_out:

@@ -89,6 +89,7 @@ class ConcurrencyLimiter:
     """
 
     def __init__(self, limits: dict[str, int | None]) -> None:
+        """``limits`` maps tier name to its cap; a missing/``None``/``<=0`` limit is unbounded."""
         # asyncio.Semaphore in the async build; threading.Semaphore after unasync.
         import asyncio
 
@@ -97,6 +98,7 @@ class ConcurrencyLimiter:
         }
 
     def acquire(self, tier: str) -> contextlib.AbstractAsyncContextManager[None]:
+        """A context manager holding one slot of ``tier`` for its duration (no-op if unbounded)."""
         sem = self._sems.get(tier)
         if sem is None:
             return contextlib.nullcontext()

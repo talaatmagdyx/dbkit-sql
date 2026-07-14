@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class EngineKey:
+    """Identifies one engine: ``environment:database:shard:role:driver`` (§9)."""
+
     environment: str
     database: str
     shard_id: str
@@ -18,8 +20,10 @@ class EngineKey:
     driver: str
 
     def __str__(self) -> str:
+        """``environment:database:shard_id:role:driver``."""
         return f"{self.environment}:{self.database}:{self.shard_id}:{self.role}:{self.driver}"
 
     @property
     def label(self) -> str:
+        """Alias for ``str(self)``, for use as a metrics/log label."""
         return str(self)

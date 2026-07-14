@@ -31,15 +31,18 @@ class DatabaseTarget:
     shard_key: object | None = None
 
     def __post_init__(self) -> None:
+        """Raise :class:`DatabaseRoutingError` if ``database`` is empty."""
         if not self.database:
             raise DatabaseRoutingError("DatabaseTarget.database must be a non-empty name")
 
     @property
     def wants_replica(self) -> bool:
+        """Whether ``role`` prefers a replica (``read``/``prefer_replica``)."""
         return self.role in ("read", "prefer_replica")
 
     @property
     def requires_primary(self) -> bool:
+        """Whether ``role`` must hit the primary (``write``/``primary_only``)."""
         return self.role in ("write", "primary_only")
 
 
@@ -58,20 +61,25 @@ class ResolvedRoute:
 class ShardResolver(Protocol):
     """Resolve a ``(database, shard_key)`` pair to a concrete shard id (§22.2)."""
 
-    def resolve(self, database: str, shard_key: object) -> str: ...
+    def resolve(self, database: str, shard_key: object) -> str:
+        """Return the shard id ``shard_key`` belongs to within ``database``."""
+        ...
 
 
 @runtime_checkable
 class ReplicaSelector(Protocol):
     """Choose a replica name for a read, or ``None`` to use the primary (§23)."""
 
-    def select(self, database: str, shard_id: str) -> str | None: ...
+    def select(self, database: str, shard_id: str) -> str | None:
+        """Return a replica name for this shard, or ``None`` to route to the primary."""
+        ...
 
 
 class SingleShardResolver:
     """Default resolver for single-shard deployments: every key maps to ``"default"``."""
 
     def resolve(self, database: str, shard_key: object) -> str:
+        """Always return ``"default"``, regardless of ``shard_key``."""
         return "default"
 
 
@@ -84,12 +92,14 @@ class HashShardResolver:
     """
 
     def __init__(self, num_shards: int, *, prefix: str = "shard") -> None:
+        """``num_shards`` fixed buckets, named ``{prefix}-000``, ``{prefix}-001``, etc."""
         if num_shards < 1:
             raise DatabaseConfigurationError("num_shards must be >= 1")
         self.num_shards = num_shards
         self.prefix = prefix
 
     def resolve(self, database: str, shard_key: object) -> str:
+        """Hash ``shard_key`` (via SHA-256) into one of ``num_shards`` buckets."""
         if shard_key is None:
             raise DatabaseRoutingError(
                 f"hash sharding requires a shard_key for database {database!r}"
@@ -111,11 +121,13 @@ class RangeShardResolver:
     """Range-based sharding (§22.2): an ordered set of upper bounds, e.g. by tenant-id range."""
 
     def __init__(self, ranges: Sequence[ShardRange]) -> None:
+        """``ranges`` need not be pre-sorted; they're sorted by ``upper_bound`` here."""
         if not ranges:
             raise DatabaseConfigurationError("RangeShardResolver requires at least one range")
         self._ranges = sorted(ranges, key=lambda r: r.upper_bound)
 
     def resolve(self, database: str, shard_key: object) -> str:
+        """The shard id of the first range whose ``upper_bound`` exceeds ``shard_key``."""
         if shard_key is None:
             raise DatabaseRoutingError(
                 f"range sharding requires a shard_key for database {database!r}"
@@ -136,9 +148,11 @@ class DirectoryShardResolver:
     """
 
     def __init__(self, directory: Mapping[object, str]) -> None:
+        """Seed the resolver with an initial ``{shard_key: shard_id}`` mapping."""
         self._directory: dict[object, str] = dict(directory)
 
     def resolve(self, database: str, shard_key: object) -> str:
+        """Look up ``shard_key``; raises :class:`DatabaseRoutingError` if unmapped."""
         try:
             return self._directory[shard_key]
         except KeyError:
@@ -155,9 +169,11 @@ class CallableShardResolver:
     """Adapts a plain ``fn(database, shard_key) -> shard_id`` callback to :class:`ShardResolver`."""
 
     def __init__(self, fn: Callable[[str, object], str]) -> None:
+        """Wrap ``fn`` so it satisfies the :class:`ShardResolver` protocol."""
         self._fn = fn
 
     def resolve(self, database: str, shard_key: object) -> str:
+        """Delegate to the wrapped callback."""
         return self._fn(database, shard_key)
 
 
@@ -169,10 +185,12 @@ class RoundRobinReplicaSelector:
     """
 
     def __init__(self, replicas: Mapping[str, Sequence[str]]) -> None:
+        """``replicas`` maps each database name to its ordered list of replica names."""
         self._names: dict[str, list[str]] = {db: list(names) for db, names in replicas.items()}
         self._counters: dict[str, int] = dict.fromkeys(self._names, 0)
 
     def select(self, database: str, shard_id: str) -> str | None:
+        """The next replica in rotation for ``database``, or ``None`` if it has none configured."""
         names = self._names.get(database) or []
         if not names:
             return None
@@ -190,12 +208,15 @@ class WeightedReplicaSelector:
         *,
         rand: Callable[[], float] | None = None,
     ) -> None:
+        """``replicas`` maps each database name to its ``(replica_name, weight)`` pairs.
+        ``rand`` overrides the random source (e.g. for deterministic tests)."""
         self._rand = rand or _random.random
         self._replicas: dict[str, list[tuple[str, int]]] = {
             db: list(specs) for db, specs in replicas.items()
         }
 
     def select(self, database: str, shard_id: str) -> str | None:
+        """A replica for ``database`` chosen at random, weighted by its configured weight."""
         specs = self._replicas.get(database) or []
         if not specs:
             return None

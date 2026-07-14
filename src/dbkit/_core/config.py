@@ -82,6 +82,7 @@ class PoolConfig:
         return self.size + self.max_overflow
 
     def validate(self) -> None:
+        """Raise :class:`DatabaseConfigurationError` if any field is out of range."""
         if self.size < 0:
             raise DatabaseConfigurationError("pool.size must be >= 0")
         if self.max_overflow < 0:
@@ -108,6 +109,7 @@ class RetryConfig:
     retry_writes: bool = False
 
     def validate(self) -> None:
+        """Raise :class:`DatabaseConfigurationError` if any field is out of range."""
         if self.attempts < 1:
             raise DatabaseConfigurationError("retry.attempts must be >= 1")
         if self.jitter not in ("full", "none"):
@@ -145,12 +147,15 @@ class CircuitBreakerConfig:
     half_open_max_calls: int = 2
 
     def validate(self) -> None:
+        """Raise :class:`DatabaseConfigurationError` if any field is out of range."""
         if self.failure_threshold < 1:
             raise DatabaseConfigurationError("circuit_breaker.failure_threshold must be >= 1")
 
 
 @dataclass(frozen=True, slots=True)
 class ObservabilityConfig:
+    """Logging/metrics/tracing toggles (§25)."""
+
     metrics: bool = True
     tracing: bool = False
     log_parameters: bool = False  # never log bound params in production (§25.3)
@@ -167,6 +172,8 @@ class ConnectionBudgetConfig:
 
 @dataclass(frozen=True, slots=True)
 class Defaults:
+    """Process-wide defaults, overridable per-target/per-call."""
+
     driver: str = "psycopg"
     query_timeout_seconds: float = 2.0
     transaction_timeout_seconds: float = 5.0
@@ -179,6 +186,7 @@ class Defaults:
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
     def validate(self) -> None:
+        """Raise :class:`DatabaseConfigurationError` if any nested config is invalid."""
         self.pool.validate()
         self.retry.validate()
         self.circuit_breaker.validate()
@@ -195,6 +203,7 @@ class TargetConfig:
     pool: PoolConfig | None = None  # falls back to defaults.pool
 
     def resolved_pool(self, defaults: Defaults) -> PoolConfig:
+        """This target's own pool config, or ``defaults.pool`` if it doesn't override one."""
         return self.pool or defaults.pool
 
     @property
@@ -205,9 +214,11 @@ class TargetConfig:
 
     @property
     def dialect(self) -> str:
+        """SQL dialect parsed from the URL, e.g. ``postgresql``."""
         return urlsplit(self.url).scheme.split("+", 1)[0]
 
     def validate(self) -> None:
+        """Raise :class:`DatabaseConfigurationError` if the URL is missing or malformed."""
         if not self.url:
             raise DatabaseConfigurationError(f"target {self.name!r} has an empty url")
         if not urlsplit(self.url).scheme:
@@ -226,11 +237,13 @@ class DatabaseConfig:
     connection_budget: ConnectionBudgetConfig = field(default_factory=ConnectionBudgetConfig)
 
     def validate(self) -> None:
+        """Raise :class:`DatabaseConfigurationError` if the primary or any replica is invalid."""
         self.primary.validate()
         for r in self.replicas:
             r.validate()
 
     def all_targets(self) -> tuple[TargetConfig, ...]:
+        """The primary followed by every replica, in configured order."""
         return (self.primary, *self.replicas)
 
     def max_connections(self, defaults: Defaults) -> int:
@@ -275,6 +288,11 @@ class DbkitConfig:
         environ: Mapping[str, str] | None = None,
         expand: bool = True,
     ) -> DbkitConfig:
+        """Build and validate a config from a plain dict (e.g. parsed YAML/JSON).
+
+        ``${VAR}``/``${VAR:-default}`` placeholders in string values are expanded against
+        ``environ`` (default ``os.environ``) unless ``expand=False``.
+        """
         raw = _expand_tree(dict(data), environ) if expand else dict(data)
         try:
             config = _build_config(raw)
@@ -287,6 +305,11 @@ class DbkitConfig:
 
     @classmethod
     def from_yaml(cls, path: str, *, environ: Mapping[str, str] | None = None) -> DbkitConfig:
+        """Build and validate a config from a YAML file (requires ``dbkit[yaml]``).
+
+        A top-level ``dbkit:`` wrapper key is unwrapped automatically, so a dbkit config can
+        be embedded inside a larger application config file.
+        """
         try:
             import yaml
         except ImportError as exc:  # pragma: no cover
@@ -305,6 +328,8 @@ class DbkitConfig:
     # -- validation & budget ------------------------------------------------------ #
 
     def validate(self) -> None:
+        """Raise :class:`DatabaseConfigurationError` if any database or the process-wide
+        connection budget is invalid."""
         if not self.databases:
             raise DatabaseConfigurationError("configuration defines no databases")
         self.defaults.validate()

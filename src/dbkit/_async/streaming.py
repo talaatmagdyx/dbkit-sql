@@ -44,6 +44,7 @@ class AsyncResultStream:
         tracer: Tracer | None = None,
         shard_id: str | None = None,
     ) -> None:
+        """Constructed by ``AsyncDatabase.stream(...)``; not intended to be built directly."""
         self._engine = engine
         self._statement = statement
         self._params = params
@@ -65,6 +66,7 @@ class AsyncResultStream:
         self._span: Any = None
 
     async def __aenter__(self) -> AsyncResultStream:
+        """Open the underlying connection and server-side cursor."""
         if self._tracer is not None:
             self._span_cm = self._tracer.span(
                 "dbkit.stream",
@@ -87,9 +89,11 @@ class AsyncResultStream:
         return self
 
     def __aiter__(self) -> AsyncResultStream:
+        """Returns ``self`` — the stream is its own iterator."""
         return self
 
     async def __anext__(self) -> Any:
+        """The next mapped row, or raise :class:`StopAsyncIteration`/a timeout error."""
         assert self._gen is not None
         if (
             self._max_duration is not None
@@ -114,6 +118,7 @@ class AsyncResultStream:
         return self._mapper(row)
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        """Release the connection/cursor unconditionally; never suppresses the exception."""
         await self._cleanup()
         if self._span_cm is not None:
             if self._span is not None:

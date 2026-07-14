@@ -42,6 +42,7 @@ class Tracer:
         schema_url: str | None = None,
         attributes: Mapping[str, Any] | None = None,
     ) -> None:
+        """A no-op tracer if ``enabled`` is False or ``opentelemetry-api`` isn't installed."""
         self._enabled = enabled and _OTEL_AVAILABLE
         self._tracer = (
             trace.get_tracer(
@@ -57,6 +58,7 @@ class Tracer:
 
     @property
     def enabled(self) -> bool:
+        """Whether this tracer actually records spans (False = full no-op)."""
         return self._enabled
 
     @contextlib.contextmanager
@@ -100,9 +102,11 @@ class SpanHandle:
     """Thin wrapper so callers can set attributes without checking ``None``/OTel presence."""
 
     def __init__(self, span: Any) -> None:
+        """Wrap ``span``, or ``None`` for a no-op handle."""
         self._span = span
 
     def set_attribute(self, key: str, value: Any) -> None:
+        """Set a span attribute; a no-op if this handle wraps no real span."""
         if self._span is not None:
             self._span.set_attribute(key, value)
 
@@ -114,6 +118,8 @@ def make_tracer(
     schema_url: str | None = None,
     attributes: Mapping[str, Any] | None = None,
 ) -> Tracer:
+    """Build a :class:`Tracer` (see its docstring for ``tracer_provider``/``schema_url``/
+    ``attributes``)."""
     return Tracer(
         enabled=enabled,
         tracer_provider=tracer_provider,

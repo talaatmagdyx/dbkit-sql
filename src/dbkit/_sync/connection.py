@@ -160,6 +160,7 @@ class ConnectionScope:
         shard_id: str,
         role: str,
     ) -> None:
+        """Wrap an already-acquired connection; not constructed directly by applications."""
         self._conn = conn
         self._is_postgres = is_postgres
         self._default_timeout = default_timeout
@@ -201,6 +202,7 @@ class ConnectionScope:
     def fetch_all(
         self, query: object, params: Mapping[str, Any] | None = None, *, map_to: Any = None
     ) -> list[Any]:
+        """Run a read and return every row, mapped to ``map_to`` (no cardinality check)."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
             rows = run_fetch(
@@ -215,6 +217,7 @@ class ConnectionScope:
     def fetch_one(
         self, query: object, params: Mapping[str, Any] | None = None, *, map_to: Any = None
     ) -> Any:
+        """Run a read expecting exactly one row; raises :class:`DatabaseResultError` otherwise."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
             row = run_fetch_one(
@@ -243,6 +246,7 @@ class ConnectionScope:
     def fetch_optional(
         self, query: object, params: Mapping[str, Any] | None = None, *, map_to: Any = None
     ) -> Any | None:
+        """Run a read expecting zero or one row; ``None`` if empty, else the mapped row."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
             row = run_fetch_optional(
@@ -264,6 +268,7 @@ class ConnectionScope:
         return result_mod.build_mapper(map_to)(row)
 
     def fetch_value(self, query: object, params: Mapping[str, Any] | None = None) -> Any:
+        """Run a read expecting exactly one row and return its first column."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
             return run_fetch_value(
@@ -291,6 +296,7 @@ class ConnectionScope:
     def fetch_values(
         self, query: object, params: Mapping[str, Any] | None = None
     ) -> list[Any]:
+        """Run a read and return the first column of every row."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
             return run_fetch_values(
@@ -302,6 +308,7 @@ class ConnectionScope:
             ) from exc
 
     def execute(self, query: object, params: Mapping[str, Any] | None = None) -> int:
+        """Run a write/DDL statement and return the affected row count."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
             cursor = run_execute(

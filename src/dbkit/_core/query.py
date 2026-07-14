@@ -77,6 +77,7 @@ class Query:
     sensitive_parameters: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
+        """Reject bare-string statements/empty names and normalize ``sensitive_parameters``."""
         if isinstance(self.statement, str):  # pragma: no cover - guarded by typing too
             raise DatabaseProgrammingError(
                 f"Query(name={self.name!r}) statement must be sql(...) or a Core construct, "
@@ -89,6 +90,7 @@ class Query:
 
     @property
     def is_write(self) -> bool:
+        """Whether this query mutates data or schema (``operation`` is ``write``/``ddl``)."""
         return self.operation in ("write", "ddl")
 
 
@@ -96,9 +98,12 @@ class QueryRegistry:
     """In-process registry of named queries for CLI listing and duplicate detection (§8.5)."""
 
     def __init__(self) -> None:
+        """Create an empty registry."""
         self._queries: dict[str, Query] = {}
 
     def register(self, query: Query) -> Query:
+        """Register ``query`` and return it; raises if the name is already taken by a
+        *different* :class:`Query` object (registering the same object twice is a no-op)."""
         existing = self._queries.get(query.name)
         if existing is not None and existing is not query:
             raise DatabaseProgrammingError(
@@ -108,12 +113,15 @@ class QueryRegistry:
         return query
 
     def get(self, name: str) -> Query | None:
+        """The registered :class:`Query` named ``name``, or ``None`` if none was registered."""
         return self._queries.get(name)
 
     def names(self) -> list[str]:
+        """Every registered query name, sorted."""
         return sorted(self._queries)
 
     def all(self) -> list[Query]:
+        """Every registered :class:`Query`, ordered by name."""
         return [self._queries[n] for n in self.names()]
 
 

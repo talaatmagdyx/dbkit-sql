@@ -17,24 +17,30 @@ Labels = Mapping[str, str]
 class MetricsSink(Protocol):
     """Minimal metrics surface dbkit emits to."""
 
-    def incr(self, name: str, value: float = 1.0, labels: Labels | None = None) -> None: ...
+    def incr(self, name: str, value: float = 1.0, labels: Labels | None = None) -> None:
+        """Increment a counter metric by ``value``."""
+        ...
 
-    def observe(self, name: str, value: float, labels: Labels | None = None) -> None: ...
+    def observe(self, name: str, value: float, labels: Labels | None = None) -> None:
+        """Record one observation of a histogram/summary metric."""
+        ...
 
-    def gauge(self, name: str, value: float, labels: Labels | None = None) -> None: ...
+    def gauge(self, name: str, value: float, labels: Labels | None = None) -> None:
+        """Set a gauge metric to its current ``value``."""
+        ...
 
 
 class NoopMetrics:
     """Default sink — does nothing, allocates nothing meaningful on the hot path."""
 
     def incr(self, name: str, value: float = 1.0, labels: Labels | None = None) -> None:
-        pass
+        """Does nothing."""
 
     def observe(self, name: str, value: float, labels: Labels | None = None) -> None:
-        pass
+        """Does nothing."""
 
     def gauge(self, name: str, value: float, labels: Labels | None = None) -> None:
-        pass
+        """Does nothing."""
 
 
 # Metric names (§25.1). Kept as constants so labels/names stay consistent across the codebase.
