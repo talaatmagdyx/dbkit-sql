@@ -1,6 +1,6 @@
 """Sync quickstart — the same program as ``quickstart_async.py`` without ``await``.
 
-    DBKIT_DSN=postgresql+psycopg://localhost/postgres python examples/quickstart_sync.py
+DBKIT_DSN=postgresql+psycopg://localhost/postgres python examples/quickstart_sync.py
 """
 
 from __future__ import annotations
@@ -14,8 +14,7 @@ DSN = os.environ.get("DBKIT_DSN", "postgresql+psycopg://localhost/postgres")
 TARGET = DatabaseTarget(database="app", role="write")
 
 CREATE_MESSAGES = sql(
-    "CREATE TABLE IF NOT EXISTS dbkit_sync_messages ("
-    " id integer PRIMARY KEY, body text NOT NULL)"
+    "CREATE TABLE IF NOT EXISTS dbkit_sync_messages ( id integer PRIMARY KEY, body text NOT NULL)"
 )
 INSERT_MESSAGE = Query(
     name="messages.insert",
@@ -43,6 +42,7 @@ def main() -> None:
     db.require_ready()
     try:
         db.execute(CREATE_MESSAGES, target=TARGET)
+        db.execute(sql("TRUNCATE dbkit_sync_messages"), target=TARGET)  # safe to re-run
         with db.transaction(target=TARGET) as tx:
             tx.execute(INSERT_MESSAGE, {"id": 1, "body": "hello"})
             tx.execute(INSERT_MESSAGE, {"id": 2, "body": "world"})

@@ -1,6 +1,6 @@
 """Async quickstart (§35). Run against a local PostgreSQL:
 
-    DBKIT_DSN=postgresql+psycopg://localhost/postgres python examples/quickstart_async.py
+DBKIT_DSN=postgresql+psycopg://localhost/postgres python examples/quickstart_async.py
 """
 
 from __future__ import annotations
@@ -19,8 +19,7 @@ CREATE_SLA_FN = sql(
     "RETURNS int LANGUAGE sql AS 'SELECT 24 / priority'"
 )
 CREATE_MESSAGES = sql(
-    "CREATE TABLE IF NOT EXISTS dbkit_messages ("
-    " id integer PRIMARY KEY, body text NOT NULL)"
+    "CREATE TABLE IF NOT EXISTS dbkit_messages ( id integer PRIMARY KEY, body text NOT NULL)"
 )
 INSERT_MESSAGE = Query(
     name="messages.insert",
@@ -49,6 +48,7 @@ async def main() -> None:
     try:
         await db.execute(CREATE_MESSAGES, target=TARGET)
         await db.execute(CREATE_SLA_FN, target=TARGET)
+        await db.execute(sql("TRUNCATE dbkit_messages"), target=TARGET)  # safe to re-run
 
         # Explicit transaction with two writes.
         async with db.transaction(target=TARGET) as tx:

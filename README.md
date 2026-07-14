@@ -61,6 +61,19 @@ user = db.fetch_optional(GET_USER, {"id": 1}, target=DatabaseTarget(database="ap
 db.close()
 ```
 
+## Examples
+
+`examples/` has a runnable, idempotent script for every feature — transactions & savepoints,
+error classification, retries & the circuit breaker, streaming, bulk insert/upsert, PostgreSQL
+COPY, exactly-once consumer processing (inbox pattern), micro-batching, health/pool
+introspection, and sync/async parity:
+
+```bash
+export DBKIT_DSN=postgresql+psycopg://localhost/postgres
+python examples/quickstart_async.py
+python examples/run_all.py            # runs every example, safe to repeat
+```
+
 ## Development
 
 ```bash
