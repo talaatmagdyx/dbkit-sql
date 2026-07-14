@@ -14,26 +14,21 @@ import contextlib
 import contextvars
 import logging
 import time
-from collections.abc import Iterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Literal
 
 from sqlalchemy import Table, insert
 from sqlalchemy.dialects import postgresql
-from sqlalchemy import Connection, Engine
 
 from .._core import bulk as bulk_mod
-from .._core.circuit import CircuitBreaker
 from .._core.config import DbkitConfig
 from .._core.errors import (
-    DatabaseCommitUnknownError,
     DatabaseError,
     DatabaseRoutingError,
     DatabaseUnsupportedOperationError,
     classify,
-    is_connection_error,
 )
-from .._core.policies import effective_timeout
-from .._core.query import Query, coerce_statement
+from .._core.query import coerce_statement
 from .._core.result import ExecutionResult
 from .._core.routing import (
     DatabaseTarget,
@@ -49,11 +44,11 @@ from ..observability import metrics as m
 from ..observability.metrics import MetricsSink, NoopMetrics
 from ..observability.tracing import Tracer, make_tracer
 from ..postgres import unnest as unnest_mod
-from ._compat import API_LABEL, copy_from_records
+from ._compat import copy_from_records
 from .connection import ConnectionScope, run_execute
 from .engine import EngineRegistry, EngineEntry
+from .executor import ResilientExecutor
 from .health import HealthReport, TargetHealth, ping
-from .resilience import ConcurrencyLimiter, run_with_retries
 from .streaming import ResultStream
 from .transaction import _TransactionManager
 
@@ -99,8 +94,13 @@ class Database:
         self._replicas = replica_selector or RoundRobinReplicaSelector(
             {name: [r.name for r in db.replicas] for name, db in config.databases.items()}
         )
-        self._breakers: dict[str, CircuitBreaker] = {}
-        self._limiters: dict[str, ConcurrencyLimiter] = {}
+        self._executor = ResilientExecutor(
+            config,
+            registry=self._registry,
+            resolve=self._resolve,
+            metrics=self._metrics,
+            tracer=self._tracer,
+        )
         self._started = False
 
     # -- construction ------------------------------------------------------------- #
@@ -200,232 +200,6 @@ class Database:
             # Explicit fallback: selector found no replica for this database -> primary (§23).
         return ResolvedRoute(database=target.database, shard_id=shard_id, role="primary")
 
-    def _entry(self, target: DatabaseTarget) -> tuple[EngineEntry, ResolvedRoute]:
-        route = self._resolve(target)
-        entry = self._registry.get(route)
-        return entry, route
-
-    def _labels(self, entry: EngineEntry, query_name: str, operation: str) -> dict[str, str]:
-        return {
-            "environment": entry.key.environment,
-            "database": entry.key.database,
-            "shard": entry.key.shard_id,
-            "role": entry.key.role,
-            "query_name": query_name,
-            "operation": operation,
-            "api": API_LABEL,
-        }
-
-    @staticmethod
-    def _is_postgres(entry: EngineEntry) -> bool:
-        return entry.target.dialect == "postgresql"
-
-    @staticmethod
-    def _query_meta(query: object) -> tuple[str, str, Query | None]:
-        if isinstance(query, Query):
-            return query.name, query.operation, query
-        return "adhoc", "read", None
-
-    # -- resilience --------------------------------------------------------------- #
-
-    def _breaker_for(self, entry: EngineEntry) -> CircuitBreaker | None:
-        """One circuit breaker per db+shard+role, created lazily if enabled (§16)."""
-        cb = self._config.defaults.circuit_breaker
-        if not cb.enabled:
-            return None
-        key = str(entry.key)
-        breaker = self._breakers.get(key)
-        if breaker is None:
-            breaker = CircuitBreaker(
-                failure_threshold=cb.failure_threshold,
-                window_seconds=cb.window_seconds,
-                open_seconds=cb.open_seconds,
-                half_open_max_calls=cb.half_open_max_calls,
-            )
-            self._breakers[key] = breaker
-        return breaker
-
-    def _limiter_for(self, database: str) -> ConcurrencyLimiter:
-        """One concurrency limiter per named database, from its concurrency config (§17)."""
-        limiter = self._limiters.get(database)
-        if limiter is None:
-            cc = self._config.databases[database].concurrency
-            limiter = ConcurrencyLimiter(
-                {
-                    "database": cc.database,
-                    "reads": cc.reads,
-                    "writes": cc.writes,
-                    "bulk": cc.bulk_writes,
-                }
-            )
-            self._limiters[database] = limiter
-        return limiter
-
-    def _execute_with_resilience(
-        self,
-        target: DatabaseTarget,
-        query: object,
-        op: Callable[[ConnectionScope], Awaitable[Any]],
-        *,
-        commit: bool,
-        timeout: float | None,
-        deadline: float | None,
-    ) -> Any:
-        """Run ``op`` under concurrency limiting, circuit breaking, and retries (§14, §16, §17).
-
-        Concurrency is acquired *inside* each attempt (before pool checkout) so queueing
-        happens in cheap waiters and a retry backoff does not hold a slot.
-        """
-        entry, _route = self._entry(target)
-        query_name, operation, q = self._query_meta(query)
-        labels = self._labels(entry, query_name, operation)
-        breaker = self._breaker_for(entry)
-        limiter = self._limiter_for(entry.key.database)
-        tier = "writes" if (q and q.is_write) else "reads"
-
-        def attempt() -> Any:
-            # Bound the concurrency-limiter wait by the same effective timeout the query
-            # itself would get, so a saturated tier fails with a classified error instead of
-            # queueing invisibly forever (§17).
-            limiter_timeout = effective_timeout(
-                timeout, q, self._config.defaults.query_timeout_seconds, deadline, time.monotonic()
-            )
-            with (
-                limiter.acquire("database", timeout=limiter_timeout),
-                limiter.acquire(tier, timeout=limiter_timeout),
-                self._scope(
-                    target, query, call_timeout=timeout, deadline=deadline, commit=commit
-                ) as scope,
-            ):
-                return op(scope)
-
-        return run_with_retries(
-            attempt,
-            query=q,
-            retry=self._config.defaults.retry,
-            breaker=breaker,
-            metrics=self._metrics,
-            labels=labels,
-            deadline=deadline,
-        )
-
-    # -- acquisition -------------------------------------------------------------- #
-
-    @contextlib.contextmanager
-    def _scope(
-        self,
-        target: DatabaseTarget,
-        query: object,
-        *,
-        call_timeout: float | None,
-        deadline: float | None,
-        commit: bool,
-    ) -> Iterator[ConnectionScope]:
-        """Acquire a short-lived connection scope, measure pool wait, emit metrics (§11.1)."""
-        entry, _route = self._entry(target)
-        query_name, operation, q = self._query_meta(query)
-        labels = self._labels(entry, query_name, operation)
-        timeout = effective_timeout(
-            call_timeout,
-            q,
-            self._config.defaults.query_timeout_seconds,
-            deadline,
-            time.monotonic(),
-        )
-
-        with self._tracer.span(
-            f"dbkit.{operation}",
-            operation_type=operation,
-            query_name=query_name,
-            database=entry.key.database,
-            shard=entry.key.shard_id,
-            role=entry.key.role,
-        ) as span:
-            wait_start = time.monotonic()
-            conn = self._acquire(entry.engine, labels, query_name)
-            pool_wait = time.monotonic() - wait_start
-            self._metrics.observe(m.POOL_WAIT_SECONDS, pool_wait, labels=labels)
-            span.set_attribute("db.pool.wait_ms", pool_wait * 1000)
-
-            scope = ConnectionScope(
-                conn,
-                is_postgres=self._is_postgres(entry),
-                default_timeout=timeout,
-                database=entry.key.database,
-                shard_id=entry.key.shard_id,
-                role=entry.key.role,
-            )
-            op_start = time.monotonic()
-            try:
-                yield scope
-            except BaseException as exc:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                if isinstance(exc, DatabaseError):
-                    self._metrics.incr(
-                        m.OP_ERRORS, labels={**labels, "error_category": exc.category.value}
-                    )
-                raise
-            else:
-                if commit:
-                    try:
-                        conn.commit()
-                    except BaseException as commit_exc:
-                        # Mirror _TransactionManager._commit(): a failure during COMMIT
-                        # may mean the write committed anyway (§15) — never silently swallow
-                        # that ambiguity, and never leave the exception unclassified either
-                        # (both would previously happen only on this auto-commit write path).
-                        if is_connection_error(commit_exc):
-                            err: DatabaseError = DatabaseCommitUnknownError(
-                                "connection failed during COMMIT; transaction outcome is unknown",
-                                original=commit_exc,
-                                database_name=entry.key.database,
-                                shard_id=entry.key.shard_id,
-                                role=entry.key.role,
-                                query_name=query_name,
-                            )
-                        else:
-                            with contextlib.suppress(Exception):
-                                conn.rollback()
-                            err = classify(
-                                commit_exc,
-                                query_name=query_name,
-                                database_name=entry.key.database,
-                                role=entry.key.role,
-                            )
-                        self._metrics.incr(
-                            m.OP_ERRORS, labels={**labels, "error_category": err.category.value}
-                        )
-                        raise err from commit_exc
-            finally:
-                duration = time.monotonic() - op_start
-                with contextlib.suppress(Exception):
-                    conn.close()
-                self._metrics.incr(m.OP_TOTAL, labels=labels)
-                self._metrics.observe(m.OP_DURATION, duration, labels=labels)
-                if duration * 1000 >= self._config.defaults.observability.slow_query_ms:
-                    obslog.slow_query_warning(
-                        query_name=query_name,
-                        duration_ms=duration * 1000,
-                        threshold_ms=self._config.defaults.observability.slow_query_ms,
-                        database=entry.key.database,
-                        pool_wait_ms=pool_wait * 1000,
-                    )
-
-    def _acquire(
-        self, engine: Engine, labels: dict[str, str], query_name: str
-    ) -> Connection:
-        try:
-            conn = engine.connect()
-        except Exception as exc:
-            err = classify(exc, query_name=query_name, database_name=labels.get("database"))
-            self._metrics.incr(m.OP_ERRORS, labels={**labels, "error_category": err.category.value})
-            raise err from exc
-        # Best-effort context tag for leak diagnostics (§10.5).
-        with contextlib.suppress(Exception):
-            conn.info["dbkit_context"] = query_name
-        return conn
-
     # -- read API ----------------------------------------------------------------- #
 
     def fetch_all(
@@ -443,7 +217,7 @@ class Database:
         Returns every row, mapped to ``map_to``, with no cardinality constraint. Retries and
         the circuit breaker apply per the resolved ``target``'s policy.
         """
-        rows: list[Any] = self._execute_with_resilience(
+        rows: list[Any] = self._executor.execute_with_resilience(
             target,
             query,
             lambda scope: scope.fetch_all(query, params, map_to=map_to),
@@ -468,7 +242,7 @@ class Database:
         Raises :class:`~dbkit.errors.DatabaseResultError` if zero or more than one row comes
         back (via SQLAlchemy's own ``Result.one()``).
         """
-        return self._execute_with_resilience(
+        return self._executor.execute_with_resilience(
             target,
             query,
             lambda scope: scope.fetch_one(query, params, map_to=map_to),
@@ -488,7 +262,7 @@ class Database:
         deadline: float | None = None,
     ) -> Any | None:
         """Run a one-shot read expecting zero or one row; ``None`` if empty."""
-        return self._execute_with_resilience(
+        return self._executor.execute_with_resilience(
             target,
             query,
             lambda scope: scope.fetch_optional(query, params, map_to=map_to),
@@ -507,7 +281,7 @@ class Database:
         deadline: float | None = None,
     ) -> Any:
         """Run a one-shot read expecting exactly one row and return its first column."""
-        return self._execute_with_resilience(
+        return self._executor.execute_with_resilience(
             target,
             query,
             lambda scope: scope.fetch_value(query, params),
@@ -526,7 +300,7 @@ class Database:
         deadline: float | None = None,
     ) -> list[Any]:
         """Run a one-shot read and return the first column of every row."""
-        values: list[Any] = self._execute_with_resilience(
+        values: list[Any] = self._executor.execute_with_resilience(
             target,
             query,
             lambda scope: scope.fetch_values(query, params),
@@ -548,9 +322,9 @@ class Database:
         deadline: float | None = None,
     ) -> ExecutionResult:
         """Run a one-shot write/DDL statement, auto-committed on success (§11.1)."""
-        query_name, _, _ = self._query_meta(query)
+        query_name, _, _ = self._executor.query_meta(query)
         start = time.monotonic()
-        row_count = self._execute_with_resilience(
+        row_count = self._executor.execute_with_resilience(
             target,
             query,
             lambda scope: scope.execute(query, params),
@@ -575,10 +349,10 @@ class Database:
         deadline: float | None = None,
     ) -> ExecutionResult:
         """Run one statement against many parameter sets (driver executemany)."""
-        query_name, _op, _q = self._query_meta(query)
+        query_name, _op, _q = self._executor.query_meta(query)
         statement = coerce_statement(query)
         start = time.monotonic()
-        with self._scope(
+        with self._executor.scope(
             target, query, call_timeout=timeout, deadline=deadline, commit=True
         ) as scope:
             try:
@@ -606,7 +380,7 @@ class Database:
         self, *, target: DatabaseTarget, timeout: float | None = None
     ) -> Iterator[ConnectionScope]:
         """A held connection with commit-on-success / rollback-on-error semantics (§11.2)."""
-        with self._scope(
+        with self._executor.scope(
             target, "adhoc", call_timeout=timeout, deadline=None, commit=True
         ) as scope:
             yield scope
@@ -635,7 +409,7 @@ class Database:
         """
         route = self._resolve(target)
         entry = self._registry.get(route)
-        labels = self._labels(entry, "transaction", "transaction")
+        labels = self._executor.labels(entry, "transaction", "transaction")
         with self._tracer.span(
             "dbkit.transaction",
             operation_type="transaction",
@@ -646,7 +420,7 @@ class Database:
         ) as span:
             manager = _TransactionManager(
                 entry.engine,
-                is_postgres=self._is_postgres(entry),
+                is_postgres=self._executor.is_postgres(entry),
                 default_timeout=self._config.defaults.transaction_timeout_seconds,
                 database=entry.key.database,
                 shard_id=entry.key.shard_id,
@@ -678,8 +452,11 @@ class Database:
                 db.execute(write_query, target=write_target)
                 row = db.fetch_one(read_query, target=read_target)  # sees the write
 
-        The override is task-local (an asyncio ``ContextVar``), so it never leaks across
-        concurrent operations in other tasks.
+        The override is a ``contextvars.ContextVar``, so it never leaks across concurrent
+        operations in other tasks — but it also does not cross a thread boundary (a plain
+        ``threading.Thread``, ``loop.run_in_executor``, or the sync ``Database`` facade driven
+        from a worker thread does not inherit it). See "Read-your-writes across threads" in
+        ``docs/troubleshooting.md`` if you need the override to apply there too.
         """
         token = _consistency_mode.set(mode)
         try:
@@ -733,10 +510,10 @@ class Database:
 
         The stream owns its connection until the context exits, so it bypasses auto-retry.
         """
-        entry, _route = self._entry(target)
+        entry, _route = self._executor.entry(target)
         statement = coerce_statement(query)
-        query_name, operation, _q = self._query_meta(query)
-        labels = self._labels(entry, query_name, operation)
+        query_name, operation, _q = self._executor.query_meta(query)
+        labels = self._executor.labels(entry, query_name, operation)
         return ResultStream(
             entry.engine,
             statement,
@@ -843,14 +620,14 @@ class Database:
             return ExecutionResult(
                 row_count=0, query_name=query_name, database_name=target.database, duration_ms=0.0
             )
-        entry, _route = self._entry(target)
-        labels = self._labels(entry, query_name, "write")
-        limiter = self._limiter_for(entry.key.database)
+        entry, _route = self._executor.entry(target)
+        labels = self._executor.labels(entry, query_name, "write")
+        limiter = self._executor.limiter_for(entry.key.database)
         bulk_cfg = self._config.defaults.bulk
         columns = bulk_mod.column_names(list(rows))
 
         if strategy == "unnest":
-            if not self._is_postgres(entry):
+            if not self._executor.is_postgres(entry):
                 raise DatabaseUnsupportedOperationError(
                     "strategy='unnest' requires PostgreSQL; this target uses a different dialect"
                 )
@@ -898,7 +675,7 @@ class Database:
                                     stmt,
                                     params,
                                     timeout=eff_timeout,
-                                    is_postgres=self._is_postgres(entry),
+                                    is_postgres=self._executor.is_postgres(entry),
                                 )
                             except Exception as exc:
                                 raise classify(
@@ -945,7 +722,7 @@ class Database:
         for batch in batches:
             try:
                 stmt, params = plan.for_batch(batch)
-                with self._scope(
+                with self._executor.scope(
                     target, query_name, call_timeout=timeout, deadline=None, commit=True
                 ) as scope:
                     cursor = run_execute(
@@ -953,7 +730,7 @@ class Database:
                         stmt,
                         params,
                         timeout=timeout,
-                        is_postgres=self._is_postgres(entry),
+                        is_postgres=self._executor.is_postgres(entry),
                     )
                     written += (
                         cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(batch)
@@ -964,7 +741,7 @@ class Database:
                 for row in batch:
                     try:
                         row_stmt, row_params = plan.for_batch([row])
-                        with self._scope(
+                        with self._executor.scope(
                             target, query_name, call_timeout=timeout, deadline=None, commit=True
                         ) as scope:
                             run_execute(
@@ -972,7 +749,7 @@ class Database:
                                 row_stmt,
                                 row_params,
                                 timeout=timeout,
-                                is_postgres=self._is_postgres(entry),
+                                is_postgres=self._executor.is_postgres(entry),
                             )
                             written += 1
                     except Exception:
@@ -995,11 +772,11 @@ class Database:
         ``records`` is an iterable (async or sync) of row sequences matching ``columns``.
         Fastest path for large ingests; PostgreSQL + psycopg only.
         """
-        entry, _route = self._entry(target)
-        if not self._is_postgres(entry):
+        entry, _route = self._executor.entry(target)
+        if not self._executor.is_postgres(entry):
             raise DatabaseUnsupportedOperationError("COPY is only supported on PostgreSQL")
-        labels = self._labels(entry, f"{table}.copy", "write")
-        limiter = self._limiter_for(entry.key.database)
+        labels = self._executor.labels(entry, f"{table}.copy", "write")
+        limiter = self._executor.limiter_for(entry.key.database)
         eff_timeout = timeout or self._config.defaults.transaction_timeout_seconds
         start = time.monotonic()
         written = 0

@@ -47,6 +47,10 @@ Every scenario runs against **both** `AsyncDatabase` and `Database`.
 - cancellation storm → every connection returns to the pool
 - bounded connections under concurrency; graceful shutdown under load
 - **full server restart** (`docker restart`) → transparent recovery (requires Docker)
+- **primary failover to a genuinely different backend** (two throwaway containers behind an
+  in-process TCP proxy; the proxy is repointed and the old container stopped) → transparent
+  recovery onto the new backend, distinguished from a same-instance restart by a marker row
+  seeded into each backend (requires Docker)
 
 ```bash
 make chaos             # needs PostgreSQL; the restart test self-skips without Docker
@@ -81,6 +85,37 @@ make soak DURATION=120 KILL_EVERY=30          # or: python -m benchmarks.soak --
 
 Verdicts: made progress, recovered after every kill, and bounded RSS / FDs / asyncio tasks /
 pool connections.
+
+## 6. The `unasync` code generator
+
+`src/dbkit/_async/` is the single hand-written source of truth; `src/dbkit/_sync/` is
+mechanically generated from it by `tools/run_unasync.py`, a straight-line **token-substitution**
+transform (not an AST rewrite) — line by line, apply the longest-match-first replacements in its
+`TOKENS` dict, plus two comment markers:
+
+- `# unasync: remove` at the end of a line — drops that single line in the generated output.
+- `# unasync: remove-start` / `# unasync: remove-end` — drops everything between the markers
+  (inclusive of the markers themselves).
+
+The full token table (imports, SQLAlchemy async types, dbkit's own class names, concurrency
+primitives, and control-flow keywords — `async def`→`def`, `await `→``, `async with`→`with`,
+etc.) is in `tools/run_unasync.py`'s `TOKENS` dict; read it directly rather than duplicating it
+here; it's the single source of truth and this doc would drift otherwise.
+
+**What this can't handle:** anything that doesn't reduce to a token or a marked-out block —
+e.g. an async-only control-flow shape with no sync equivalent, or a new asyncio primitive with
+no entry in `TOKENS`. `_compat.py` exists precisely for this: it's hand-written **separately**
+on both sides (`_async/_compat.py` / `_sync/_compat.py`, listed in `HANDWRITTEN` and skipped by
+the generator entirely) for the handful of primitives that are genuinely different between the
+two worlds (client-side timeouts, cancellation, semaphore-with-timeout — see
+`semaphore_acquire()`). If you need new async-only behavior, either find a token-level rewrite
+that already fits, or add a same-named function to both `_compat.py` files.
+
+`tests/unit/test_unasync_translation.py` is a smoke test asserting the transform handles a
+deliberately awkward fixture snippet (nested `async with`, `async for` inside a comprehension-
+adjacent block, chained `await`) correctly — it exists to catch a *silent* mistranslation (code
+that still parses and imports, just wrong) before it reaches `_sync/`, which `--check` alone
+cannot do (it only proves regeneration is deterministic, not that the rules are complete).
 
 ## Local Docker note
 

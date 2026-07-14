@@ -97,7 +97,13 @@ class PoolConfig:
 
 @dataclass(frozen=True, slots=True)
 class RetryConfig:
-    """Retry policy (§14). Writes are not retried unless explicitly enabled *and* idempotent."""
+    """Retry policy (§14). Writes are not retried unless explicitly enabled *and* idempotent.
+
+    ``retry_writes`` and ``Query.idempotent`` are both trust-based flags, not verified
+    properties — enabling them means "I have checked this SQL is safe to run twice," not
+    "dbkit made this SQL safe to run twice." See ``dbkit query-list`` for a best-effort static
+    check that flags writes marked idempotent with no visible safety guard in their SQL text.
+    """
 
     attempts: int = 2
     initial_delay_ms: float = 20.0

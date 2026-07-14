@@ -2,21 +2,22 @@
 
 Failures are induced the way rabbitkit's SRE suite does — real infrastructure faults, not
 mocks: killing PostgreSQL backends (``pg_terminate_backend``), restarting the container
-(``docker restart``), racing a kill against an in-flight commit, and driving many concurrent
-operations. Assertions center on: recovery, correct error classification, no connection leaks,
-and bounded resources.
+(``docker restart``), failing over to a genuinely different backend behind a proxy, racing a
+kill against an in-flight commit, and driving many concurrent operations. Assertions center on:
+recovery, correct error classification, no connection leaks, and bounded resources.
 
 Scenarios that only need SQL (backend termination, pool bounds, cancellation, shutdown) run
-against ``DBKIT_TEST_DSN`` too. Scenarios that must restart the server require Docker and use
-a dedicated testcontainer; they self-skip when Docker is unavailable.
+against ``DBKIT_TEST_DSN`` too. Scenarios that must restart/replace the server require Docker;
+they self-skip when it's unavailable.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
@@ -338,3 +339,189 @@ async def test_recovers_after_full_database_restart() -> None:
             assert recovered, f"did not recover after restart; last error: {last_err}"
         finally:
             await db.close()
+
+
+# --- primary-failover scenario (a genuinely different backend, not a restart) ------- #
+
+# Uses the raw `docker` CLI directly rather than testcontainers: testcontainers' Ryuk reaper
+# container bind-mounts the host's docker.sock, which fails under some Docker Desktop / VM
+# configurations unrelated to dbkit (the same reason `test_recovers_after_full_database_
+# restart` above is environment-sensitive). Managing two throwaway containers with plain
+# `docker run`/`stop`/`rm` sidesteps that entirely and is exactly how the rest of this file's
+# faults are induced — real infrastructure, not mocks.
+
+_FAILOVER_A_PORT = 15511
+_FAILOVER_B_PORT = 15512
+
+
+def _docker_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=30)
+
+
+def _skip_no_docker_cli() -> None:
+    try:
+        result = _docker_cli("ps")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pytest.skip("docker CLI not available")
+    if result.returncode != 0:
+        pytest.skip(f"docker daemon not reachable: {result.stderr.strip()}")
+
+
+@contextlib.contextmanager
+def _throwaway_postgres(name: str, host_port: int) -> Iterator[None]:
+    _docker_cli("rm", "-f", name)
+    started = _docker_cli(
+        "run",
+        "-d",
+        "--name",
+        name,
+        "-e",
+        "POSTGRES_USER=dbkit",
+        "-e",
+        "POSTGRES_PASSWORD=dbkit",
+        "-e",
+        "POSTGRES_DB=dbkit",
+        "-p",
+        f"{host_port}:5432",
+        "--tmpfs",
+        "/var/lib/postgresql/data",
+        "postgres:16",
+    )
+    if started.returncode != 0:
+        pytest.skip(f"could not start container {name!r}: {started.stderr.strip()}")
+    try:
+        deadline = time.monotonic() + 30
+        ready = False
+        while time.monotonic() < deadline:
+            # pg_isready alone races with PostgreSQL's own brief "the database system is
+            # starting up" window right after it starts accepting TCP connections but before
+            # it's actually ready to run queries — require a real query to succeed too.
+            if (
+                _docker_cli("exec", name, "pg_isready", "-U", "dbkit").returncode == 0
+                and _docker_cli(
+                    "exec", name, "psql", "-U", "dbkit", "-d", "dbkit", "-c", "SELECT 1"
+                ).returncode
+                == 0
+            ):
+                ready = True
+                break
+            time.sleep(0.5)
+        if not ready:
+            pytest.skip(f"container {name!r} never became ready")
+        yield
+    finally:
+        _docker_cli("rm", "-f", name)
+
+
+class _FailoverProxy:
+    """A minimal local TCP proxy so dbkit's DSN stays constant across a simulated primary
+    failover — a real PgBouncer/HAProxy/cloud load balancer plays exactly this role. Each
+    accepted client connection is piped to whatever ``(host, port)`` was current *at accept
+    time*; :meth:`repoint` only affects connections accepted afterward."""
+
+    def __init__(self, host: str, port: int) -> None:
+        self._upstream = (host, port)
+        self._server: asyncio.Server | None = None
+        self.port = 0
+
+    def repoint(self, host: str, port: int) -> None:
+        self._upstream = (host, port)
+
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.port = self._server.sockets[0].getsockname()[1]
+
+    async def stop(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        host, port = self._upstream
+        try:
+            up_reader, up_writer = await asyncio.open_connection(host, port)
+        except OSError:
+            writer.close()
+            return
+
+        async def pump(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
+            try:
+                while True:
+                    data = await src.read(65536)
+                    if not data:
+                        break
+                    dst.write(data)
+                    await dst.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                pass
+            finally:
+                with contextlib.suppress(Exception):
+                    dst.close()
+
+        await asyncio.gather(pump(reader, up_writer), pump(up_reader, writer))
+
+
+async def test_recovers_after_primary_failover_to_a_different_backend() -> None:
+    """A primary *failover* — traffic moves to a genuinely different backend, not just a
+    restart of the same instance — is recovered transparently via dbkit's retry/pre-ping,
+    exactly like the same-instance-restart scenario above. This is the scenario the review
+    flagged as untested: `test_recovers_after_full_database_restart` only proves recovery
+    after the *same* container comes back, not after the primary actually changes (§10.6, §16).
+    """
+    _skip_no_docker_cli()
+
+    with (
+        _throwaway_postgres("dbkit-failover-a", _FAILOVER_A_PORT),
+        _throwaway_postgres("dbkit-failover-b", _FAILOVER_B_PORT),
+    ):
+        # Seed each backend with a distinguishing marker, connecting directly (bypassing the
+        # proxy) — this lets the test prove traffic actually moved to B, not just that "some
+        # connection succeeded" after the failover.
+        for port, marker in ((_FAILOVER_A_PORT, "A"), (_FAILOVER_B_PORT, "B")):
+            direct_dsn = f"postgresql+psycopg://dbkit:dbkit@127.0.0.1:{port}/dbkit"
+            seed_db = await _make_db(direct_dsn, size=1, max_overflow=0)
+            await seed_db.execute(
+                sql("CREATE TABLE IF NOT EXISTS dbkit_failover_marker (v text)"), target=TARGET
+            )
+            await seed_db.execute(sql("TRUNCATE dbkit_failover_marker"), target=TARGET)
+            await seed_db.execute(
+                sql("INSERT INTO dbkit_failover_marker VALUES (:v)"), {"v": marker}, target=TARGET
+            )
+            await seed_db.close()
+
+        proxy = _FailoverProxy("127.0.0.1", _FAILOVER_A_PORT)
+        await proxy.start()
+        db = await _make_db(
+            f"postgresql+psycopg://dbkit:dbkit@127.0.0.1:{proxy.port}/dbkit",
+            size=2,
+            max_overflow=2,
+        )
+        try:
+            marker = Query(
+                name="chaos.failover_marker",
+                statement=sql("SELECT v FROM dbkit_failover_marker"),
+                operation="read",
+                idempotent=True,
+            )
+            assert await db.fetch_value(marker, target=TARGET) == "A"
+
+            # Failover: the old primary goes away and new connections must land on the new one.
+            proxy.repoint("127.0.0.1", _FAILOVER_B_PORT)
+            _docker_cli("stop", "-t", "1", "dbkit-failover-a")
+
+            deadline = time.monotonic() + 60
+            recovered_marker: str | None = None
+            last_err: Exception | None = None
+            while time.monotonic() < deadline:
+                try:
+                    recovered_marker = await db.fetch_value(marker, target=TARGET)
+                    break
+                except DatabaseError as exc:
+                    last_err = exc
+                    await asyncio.sleep(1.0)
+            assert recovered_marker == "B", (
+                f"did not recover onto the new backend after failover; last error: {last_err}"
+            )
+        finally:
+            await db.close()
+            await proxy.stop()

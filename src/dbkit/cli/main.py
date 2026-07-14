@@ -16,6 +16,7 @@ import typer
 from .._async.database import AsyncDatabase
 from .._core.config import DbkitConfig
 from .._core.errors import DatabaseConfigurationError, DatabaseError
+from .._core.idempotency_lint import looks_unsafe_to_retry
 from .._core.query import default_registry
 
 app = typer.Typer(add_completion=False, help="dbkit — configuration, health, and pool diagnostics.")
@@ -172,7 +173,10 @@ def query_list() -> None:
     """List queries registered on the process-global default registry.
 
     Only queries constructed in this process appear — import your application's query
-    modules first if you need them listed.
+    modules first if you need them listed. Writes marked ``idempotent=True`` with no visible
+    ``ON CONFLICT``-style guard in their SQL text get a best-effort warning — dbkit's retry
+    executor trusts ``idempotent=True`` as-is; it does not verify the SQL is actually safe to
+    run twice (§14).
     """
     names = default_registry.names()
     if not names:
@@ -181,7 +185,13 @@ def query_list() -> None:
     for name in names:
         q = default_registry.get(name)
         assert q is not None
-        typer.echo(f"{name}  operation={q.operation}  idempotent={q.idempotent}")
+        line = f"{name}  operation={q.operation}  idempotent={q.idempotent}"
+        if looks_unsafe_to_retry(q):
+            line += (
+                "  [WARNING: idempotent=True but no ON CONFLICT/guard detected — "
+                "verify this write is actually safe to run twice]"
+            )
+        typer.echo(line)
 
 
 def main() -> None:

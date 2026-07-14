@@ -68,8 +68,92 @@ async def main() -> None:
         )
         print(f"\nfinal state: {count} order row (expect 1, not 3), amount={total_amount}")
         print(f"broker saw {acked} acks (expect 3) — redelivery was safe")
+
+        print()
+        await poison_message_with_attempt_counting(db)
     finally:
         await db.close()
+
+
+async def poison_message_with_attempt_counting(db: AsyncDatabase) -> None:
+    """A message whose ``work()`` always fails ("poison message" — e.g. a malformed payload)
+    must eventually stop retrying and go to a dead-letter queue instead of looping forever.
+
+    ``ack_after_commit``'s own ``dead_letter`` callback only fires for a non-retryable
+    :class:`~dbkit.errors.DatabaseError` raised by ``work()`` — an *application*-level failure
+    (a bad payload, a business-rule violation) isn't a ``DatabaseError`` at all, so it never
+    reaches that callback. "Poison after N attempts" is a separate, application-level policy
+    layered on top, tracked with a durable attempts counter — durable because the inbox claim
+    itself rolls back along with the rest of the transaction when ``work()`` fails, so it
+    cannot be used to count failed attempts (only successful, committed ones).
+    """
+    MAX_ATTEMPTS = 3
+    CONSUMER, MESSAGE_ID = "poison_processor", "poison-1"
+
+    await db.execute(
+        sql(
+            "CREATE TABLE IF NOT EXISTS dbkit_example_attempts ("
+            "consumer_name text NOT NULL, message_id text NOT NULL, attempts int NOT NULL, "
+            "PRIMARY KEY (consumer_name, message_id))"
+        ),
+        target=TARGET,
+    )
+    await db.execute(
+        sql("DELETE FROM dbkit_example_attempts WHERE consumer_name = :c"),
+        {"c": CONSUMER},
+        target=TARGET,
+    )
+    await db.execute(
+        sql("DELETE FROM consumed_messages WHERE consumer_name = :c"),
+        {"c": CONSUMER},
+        target=TARGET,
+    )
+
+    async def note_attempt() -> int:
+        # A standalone, immediately-committed transaction — it must durably persist even when
+        # the transaction around work() below rolls back. `db.fetch_value()` (no explicit
+        # transaction) would NOT do that here: it's dbkit's read path (no commit at all), so a
+        # write-with-RETURNING through it is silently rolled back on connection close — an
+        # explicit `db.transaction()` is required to both write and read RETURNING back.
+        async with db.transaction(target=TARGET) as tx:
+            return await tx.fetch_value(
+                sql(
+                    "INSERT INTO dbkit_example_attempts (consumer_name, message_id, attempts) "
+                    "VALUES (:c, :m, 1) ON CONFLICT (consumer_name, message_id) "
+                    "DO UPDATE SET attempts = dbkit_example_attempts.attempts + 1 "
+                    "RETURNING attempts"
+                ),
+                {"c": CONSUMER, "m": MESSAGE_ID},
+            )
+
+    async def always_fails(tx: object) -> None:
+        raise RuntimeError("simulated permanent failure (e.g. a malformed payload)")
+
+    async def ack() -> None:
+        print("  -> broker message acked")
+
+    dead_lettered = False
+    for delivery in range(1, MAX_ATTEMPTS + 2):
+        attempts = await note_attempt()
+        print(f"poison delivery {delivery}: attempt #{attempts} for {MESSAGE_ID!r}")
+        if attempts > MAX_ATTEMPTS:
+            print(f"  -> exceeded {MAX_ATTEMPTS} attempts, routing to dead-letter queue")
+            dead_lettered = True
+            await ack()  # ack so the broker stops redelivering; the DLQ owns it now
+            break
+        try:
+            await ack_after_commit(
+                db,
+                consumer=CONSUMER,
+                message_id=MESSAGE_ID,
+                target=TARGET,
+                work=always_fails,
+                ack=ack,
+            )
+        except Exception as exc:
+            print(f"  -> attempt failed (not acked, broker will redeliver): {exc}")
+
+    print(f"dead-lettered after {MAX_ATTEMPTS} attempts: {dead_lettered}")
 
 
 if __name__ == "__main__":

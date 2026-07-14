@@ -23,17 +23,27 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
   COPY, never carrying SQL text or params; injectable `tracer_provider` for per-tenant/test
   isolation). Log events carry the active span's `trace_id`/`span_id` for trace/log
   correlation.
-- Sync + async facades from one source (unasync generation).
+- Sync + async facades from one source (unasync generation), documented transformation rules
+  and a translation-completeness smoke test (`docs/testing.md`,
+  `tests/unit/test_unasync_translation.py`).
+- `ResilientExecutor` (`_async/executor.py`): connection acquisition, pool-wait/error/slow-query
+  instrumentation, and the concurrency-limiter + circuit-breaker + retry-loop orchestration
+  extracted from `AsyncDatabase` into a focused collaborator — the facade is a thinner
+  dispatcher over fetch/execute/bulk/stream/transaction, each delegating to it.
 
 ## Phase 2 — Resilience ✅ (delivered)
 
 - SQLSTATE classification with a retryability map.
 - Retry executor (`_async/resilience.py`): idempotency-gated, deadline-aware, exponential +
-  full jitter; the decision logic is the pure, property-tested `_core.policies`.
+  full jitter; the decision logic is the pure, property-tested `_core.policies`. A best-effort
+  static lint (`_core/idempotency_lint.py`, surfaced via `dbkit query-list`) flags writes marked
+  `idempotent=True` with no visible `ON CONFLICT`-style guard in their SQL text.
 - Circuit breaker (`_core/circuit.py`): per db+shard+role, only infrastructure failures trip
   it; opt-in via `circuit_breaker.enabled`.
 - Concurrency tiers (`ConcurrencyLimiter`): per-database/reads/writes/bulk semaphores acquired
-  before pool checkout.
+  before pool checkout, bounded by the call's own effective timeout — a saturated tier raises
+  `DatabaseOverloadedError` instead of queueing invisibly forever. `db_circuit_breaker_state`
+  gauge (0/1/2) makes breaker state directly observable (`docs/observability.md`).
 - Perf: dropped the redundant per-op `SET statement_timeout` round trip on the async path
   (client-side `asyncio.timeout` covers it), cutting small-read overhead from ~31% to ~6% over
   raw SQLAlchemy Core.
@@ -117,6 +127,13 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
   (psycopg-only, matching `postgres/pipeline.py`'s own guard), so COPY against a non-psycopg
   driver now fails with a clean `DatabaseUnsupportedOperationError` instead of a confusing
   raw `TypeError`.
+- A real primary-failover chaos test (`test_recovers_after_primary_failover_to_a_different_
+  backend`) alongside the existing same-instance-restart test — two throwaway containers
+  behind an in-process proxy, proving recovery lands on a genuinely different backend.
+- `docs/security.md`, `docs/observability.md` (example Grafana dashboard + Prometheus alert
+  rules), `docs/troubleshooting.md`, and `docs/versioning.md` (SemVer + deprecation policy).
+- A 10-minute soak (`benchmarks.soak --duration 600`) and a `BatchCollector` high-fan-in
+  benchmark (`benchmarks/bench_batch_collector.py`) as evidence beyond the 60s CI soak gate.
 
 No further stretch items remain from the original spec. dbkit is intentionally scoped as a
 database-only toolkit — no broker/message-queue adapter is planned.

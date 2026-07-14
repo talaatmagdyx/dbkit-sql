@@ -89,3 +89,42 @@ def test_invalid_config_exits_nonzero(tmp_path) -> None:
 def test_query_list_empty_by_default() -> None:
     result = runner.invoke(app, ["query-list"])
     assert result.exit_code == 0
+
+
+def test_query_list_warns_on_unguarded_idempotent_insert() -> None:
+    from dbkit._core.query import Query, default_registry, sql
+
+    q = Query(
+        name="test_cli.unguarded_insert",
+        statement=sql("INSERT INTO t (id) VALUES (:id)"),
+        operation="write",
+        idempotent=True,
+    )
+    default_registry.register(q)
+    try:
+        result = runner.invoke(app, ["query-list"])
+    finally:
+        del default_registry._queries[q.name]
+    assert result.exit_code == 0
+    assert "test_cli.unguarded_insert" in result.output
+    assert "WARNING" in result.output
+    assert "verify this write is actually safe to run twice" in result.output
+
+
+def test_query_list_does_not_warn_on_guarded_insert() -> None:
+    from dbkit._core.query import Query, default_registry, sql
+
+    q = Query(
+        name="test_cli.guarded_insert",
+        statement=sql("INSERT INTO t (id) VALUES (:id) ON CONFLICT DO NOTHING"),
+        operation="write",
+        idempotent=True,
+    )
+    default_registry.register(q)
+    try:
+        result = runner.invoke(app, ["query-list"])
+    finally:
+        del default_registry._queries[q.name]
+    assert result.exit_code == 0
+    assert "test_cli.guarded_insert" in result.output
+    assert "WARNING" not in result.output

@@ -15,9 +15,13 @@ nav:
       - Errors: api/errors.md
       - Observability: api/observability.md
       - Integrations: api/integrations.md
+  - Security: security.md
+  - Dashboards & Alerting: observability.md
+  - Troubleshooting: troubleshooting.md
   - Testing & Benchmarks: testing.md
   - Roadmap: roadmap.md
   - Requirements: requirements.md
+  - Versioning & Deprecation: versioning.md
 
 plugins:
   - search

@@ -6,6 +6,10 @@ wires these into its own consumer loop.
 
 ::: dbkit.integrations.inbox_ddl
 
+::: dbkit.integrations.partitioned_inbox_ddl
+
+::: dbkit.integrations.inbox_month_partition_ddl
+
 ::: dbkit.integrations.process_once
 
 ::: dbkit.integrations.ack_after_commit

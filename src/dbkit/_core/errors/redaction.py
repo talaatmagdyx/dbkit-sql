@@ -17,7 +17,14 @@ REDACTED = "***"
 # postgresql+psycopg://user:secret@host:5432/db  ->  redact the password component.
 _DSN_RE = re.compile(r"(?P<pre>[a-z0-9+]+://[^:/\s]+:)(?P<pw>[^@/\s]+)(?P<post>@)", re.IGNORECASE)
 
-# Common secret-ish key fragments; redacted from parameter maps unless caller opts out.
+# Common secret-ish/PII key fragments; redacted from parameter maps unless caller opts out.
+# This list is deliberately conservative and documented (not just here — see
+# docs/troubleshooting.md's redaction section): it substring-matches credential and
+# unambiguous-PII fragments, but cannot know an application's full schema. Anything outside
+# this list — including context-dependent fields like email/phone that aren't always secret —
+# must be declared via ``Query.sensitive_parameters``. See
+# ``tests/property/test_invariants.py::test_hint_list_boundary_is_documented_and_tested`` for
+# the exact, tested catch/miss boundary.
 _SENSITIVE_KEY_HINTS = (
     "password",
     "passwd",
@@ -31,6 +38,14 @@ _SENSITIVE_KEY_HINTS = (
     "private_key",
     "access_key",
     "ssn",
+    "national_id",
+    "credit_card",
+    "card_number",
+    "cvv",
+    "iban",
+    "dob",
+    "date_of_birth",
+    "pin",
 )
 
 

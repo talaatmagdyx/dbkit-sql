@@ -6,6 +6,62 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — "before stable 1.0" production-readiness review items
+- **Idempotent-write guard rail** (`_core/idempotency_lint.py`): `dbkit query-list` now warns
+  on registered writes marked `idempotent=True` whose SQL text has no visible `ON CONFLICT`/
+  `WHERE NOT EXISTS`/`MERGE` guard — a best-effort static nudge, not a gate (dbkit cannot see
+  your schema's unique constraints). `Query.idempotent` and `RetryConfig` docstrings now state
+  explicitly that these flags are trust-based, not verified.
+- **Redaction hint-list documented and boundary-tested**: expanded
+  `is_sensitive_key`'s hint list with unambiguous PII/payment fragments (`credit_card`,
+  `card_number`, `cvv`, `iban`, `dob`, `date_of_birth`, `national_id`, `pin`); the exact catch/
+  miss boundary is now a tested contract
+  (`tests/property/test_invariants.py::test_hint_list_boundary_is_documented_and_tested`) and
+  documented in the new `docs/security.md`.
+- **`docs/observability.md`**: an example Grafana dashboard (importable JSON) and Prometheus
+  alerting rules (commit-unknown, circuit-open, pool-wait, rollback-rate, connection-hold) for
+  every metric dbkit emits, including the new `db_circuit_breaker_state` gauge.
+- **A real primary-failover chaos test** (not just a same-instance restart):
+  `test_recovers_after_primary_failover_to_a_different_backend` runs two throwaway PostgreSQL
+  containers behind an in-process TCP proxy, kills the one currently in use, repoints the
+  proxy, and confirms recovery lands on the genuinely different backend (verified via a marker
+  row seeded into each). Uses the raw `docker` CLI rather than `testcontainers`, since
+  `testcontainers`' Ryuk reaper hits a host-mount issue on some Docker Desktop setups — the
+  same reason the existing restart test is environment-sensitive.
+- **`docs/troubleshooting.md`**: a symptom → cause → fix guide covering retry/idempotency,
+  commit-unknown, pool exhaustion, connection budgets, PgBouncer, asyncpg limitations, the
+  circuit breaker, and read-your-writes across a thread boundary.
+- **`docs/testing.md`**: documents `tools/run_unasync.py`'s transformation rules and scope
+  (what token-substitution can and can't handle, and why `_compat.py` exists), backed by a new
+  translation-completeness smoke test (`tests/unit/test_unasync_translation.py`) that feeds the
+  transform a deliberately awkward async fixture and asserts the exact expected sync output —
+  catching a *silent* mistranslation that `--check` alone cannot (it only proves regeneration
+  is deterministic, not that the rules are complete).
+- **A 10-minute soak** (`benchmarks.soak --duration 600 --kill-every 45`, up from the 60s CI
+  gate): ~120K confirmed inserts, 0 recovery failures, RSS/FD/task growth all bounded — real
+  evidence beyond the CI smoke gate (a true multi-hour run remains a deployment-time exercise).
+  **`benchmarks/bench_batch_collector.py`**: `BatchCollector.add()` latency at up to 2000
+  concurrent producers — throughput holds at ~2M items/s with P99 latency ~0.001ms even at
+  2000-way fan-in, refuting the review's "unconfirmed lock-contention ceiling" concern.
+- **`docs/versioning.md`**: SemVer policy, what "stable 1.0" requires, and the post-1.0
+  deprecation window.
+- **`ResilientExecutor`** (`_async/executor.py`, new): extracted the concurrency-limiter +
+  circuit-breaker + retry-loop + connection-acquisition orchestration out of `AsyncDatabase`
+  into a focused collaborator, mirroring how bulk writes/streaming/transactions already live in
+  their own modules — `AsyncDatabase` is now a thinner dispatcher. Zero behavior change,
+  regression-tested on both frontends and both drivers.
+- **Partitioned inbox table** (`dbkit.integrations.partitioned_inbox_ddl`/
+  `inbox_month_partition_ddl`) and a **poison-message attempt-counting example**
+  (`examples/inbox_idempotent_consumer.py`) showing why the attempt counter must be a
+  standalone, immediately-committed write (an inbox claim rolls back along with the rest of
+  the transaction when `work()` fails, so it can't itself count failed attempts) — routing to
+  a dead-letter path after a configurable attempt limit, layered on top of
+  `ack_after_commit`'s own per-attempt `DatabaseError` routing.
+- `db.consistency_scope()`'s docstring and `docs/troubleshooting.md` now document that the
+  read-your-writes override doesn't cross a thread boundary (`contextvars` aren't inherited by
+  new OS threads), with the fix (capture `contextvars.copy_context()`, or target the primary
+  explicitly for that read).
+
 ### Fixed — production-readiness review findings
 - **`db.execute()`'s auto-commit path could leak a raw, unclassified exception and silently
   skip commit-unknown detection.** A connection failure during the implicit `COMMIT` (e.g. the

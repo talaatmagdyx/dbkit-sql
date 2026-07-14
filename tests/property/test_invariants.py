@@ -57,6 +57,51 @@ def test_redact_dsn_removes_password(pw) -> None:
     assert "user" in out and "host" in out
 
 
+def test_hint_list_boundary_is_documented_and_tested() -> None:
+    """The substring-hint heuristic in ``is_sensitive_key`` has real, unavoidable false
+    negatives — this test makes the exact boundary explicit and regression-tested, so a future
+    change to the hint list is a deliberate, reviewed decision rather than a silent drift.
+
+    Anything in ``NOT_CAUGHT`` must be declared via ``Query.sensitive_parameters`` if an
+    application actually binds it — the heuristic alone is not sufficient for these.
+    """
+    caught = {
+        "password",
+        "user_password",
+        "api_key",
+        "apiKey",
+        "token",
+        "access_token",
+        "ssn",
+        "secret_key",
+        "private_key",
+        "client_secret",
+        "credit_card",
+        "credit_card_number",
+        "card_number",
+        "cvv",
+        "iban",
+        "dob",
+        "date_of_birth",
+        "national_id",
+        "pin",
+    }
+    not_caught = {
+        "email",
+        "phone_number",
+        "full_name",
+        "address",
+        "date_of_employment",  # contains no hint substring despite looking date-related
+        "username",
+    }
+    for key in caught:
+        assert is_sensitive_key(key), f"expected {key!r} to be caught by the hint list"
+    for key in not_caught:
+        assert not is_sensitive_key(key), (
+            f"{key!r} is now caught — update NOT_CAUGHT/docs if this is intentional"
+        )
+
+
 # --- classifier totality ----------------------------------------------------------- #
 
 _sqlstate = st.text(alphabet=string.ascii_uppercase + string.digits, min_size=5, max_size=5)

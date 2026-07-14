@@ -22,7 +22,8 @@ DEFAULT_INBOX_TABLE = "consumed_messages"
 
 
 def inbox_ddl(table: str = DEFAULT_INBOX_TABLE) -> str:
-    """DDL for the inbox table (§28.3). Time-partition it in production for cheap pruning."""
+    """DDL for the inbox table (§28.3). Time-partition it in production for cheap pruning —
+    see :func:`partitioned_inbox_ddl`/:func:`inbox_month_partition_ddl` for that variant."""
     return f"""
         CREATE TABLE IF NOT EXISTS {table} (
             consumer_name TEXT NOT NULL,
@@ -30,6 +31,49 @@ def inbox_ddl(table: str = DEFAULT_INBOX_TABLE) -> str:
             processed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (consumer_name, message_id)
         )
+    """
+
+
+def partitioned_inbox_ddl(table: str = DEFAULT_INBOX_TABLE) -> str:
+    """DDL for a **partitioned** inbox table, range-partitioned by ``processed_at`` (§28.3).
+
+    A single unbounded ``consumed_messages`` table's dedup lookup gets slower and its storage
+    grows without bound as message volume accumulates. Range-partitioning by month makes
+    pruning old data a cheap ``DROP TABLE`` on a partition instead of a slow ``DELETE``. The
+    partition key must be part of the primary key for declarative partitioning, so this variant
+    keys on ``(consumer_name, message_id, processed_at)`` instead of just the first two.
+
+    Partitions themselves aren't created automatically — call
+    :func:`inbox_month_partition_ddl` for each month you need (typically from a scheduled job
+    that creates the next 1-2 months ahead of time; `pg_partman` or a cron-triggered `dbkit`
+    script both work). Older partitions can simply be dropped once no longer needed for
+    dedup/audit purposes — a message's redelivery window is bounded by the broker's own
+    retention, so a partition older than that window is always safe to drop.
+    """
+    return f"""
+        CREATE TABLE IF NOT EXISTS {table} (
+            consumer_name TEXT NOT NULL,
+            message_id    TEXT NOT NULL,
+            processed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (consumer_name, message_id, processed_at)
+        ) PARTITION BY RANGE (processed_at)
+    """
+
+
+def inbox_month_partition_ddl(year: int, month: int, *, table: str = DEFAULT_INBOX_TABLE) -> str:
+    """DDL for one calendar-month partition of :func:`partitioned_inbox_ddl`'s table.
+
+    ``year``/``month`` are passed explicitly (not computed from the current date) so this stays
+    a pure function — call it with whatever month you actually need created, e.g. from a
+    scheduled job that creates the next month a few days before it starts.
+    """
+    start = f"{year:04d}-{month:02d}-01"
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    end = f"{next_year:04d}-{next_month:02d}-01"
+    partition_name = f"{table}_{year:04d}_{month:02d}"
+    return f"""
+        CREATE TABLE IF NOT EXISTS {partition_name} PARTITION OF {table}
+        FOR VALUES FROM ('{start}') TO ('{end}')
     """
 
 

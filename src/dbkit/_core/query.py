@@ -72,6 +72,13 @@ class Query:
     statement: Statement
     operation: Operation = "read"
     timeout: float | None = None
+    #: Declares this write *may* be retried by dbkit's retry executor (§14) — it does **not**
+    #: verify the SQL is actually safe to run twice. Marking a plain ``INSERT`` idempotent
+    #: without an ``ON CONFLICT``/uniqueness guard is the most common way a transient network
+    #: blip (the write commits, the client never sees the ack) turns into a duplicate row on
+    #: retry. Only set this when the statement itself is genuinely safe to repeat (``ON
+    #: CONFLICT``, ``WHERE NOT EXISTS``, or a natural-key ``UPDATE``/``DELETE``) — see
+    #: ``dbkit query-list``, which flags writes that look unsafe by this heuristic.
     idempotent: bool = False
     expected_cardinality: Cardinality | None = None
     sensitive_parameters: frozenset[str] = field(default_factory=frozenset)
