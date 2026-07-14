@@ -5,7 +5,7 @@ DBKIT_DSN=postgresql+psycopg://localhost/postgres python examples/opentelemetry_
 Requires the ``otel`` extra plus an SDK to actually export anything (dbkit only depends on
 ``opentelemetry-api``, which is a no-op without an SDK):
 
-    pip install dbkit[otel] opentelemetry-sdk
+    pip install dbkit-sql[otel] opentelemetry-sdk
 
 dbkit itself never configures a ``TracerProvider``/``MeterProvider`` — that's the
 application's job (this example does it with in-memory exporters so the output is visible

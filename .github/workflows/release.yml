@@ -2,8 +2,10 @@ name: Release
 
 # Triggered by pushing a version tag, e.g. `git tag v0.1.0 && git push --tags`.
 # Uses PyPI's trusted publishing (OIDC) — no API token stored in this repo. Configure the
-# trusted publisher for this repo/workflow at https://pypi.org/manage/project/dbkit/settings/publishing/
-# before the first release.
+# trusted publisher for this repo/workflow at
+# https://pypi.org/manage/project/dbkit-sql/settings/publishing/ before the first release
+# (the project must already exist on PyPI, or use the "pending publisher" flow for a
+# not-yet-published project at https://pypi.org/manage/account/publishing/).
 on:
   push:
     tags:

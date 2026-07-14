@@ -55,9 +55,12 @@ dialects are not covered by CI.
 ## Install
 
 ```bash
-pip install "dbkit[psycopg]"          # async + sync PostgreSQL
-pip install "dbkit[psycopg,yaml,prometheus,otel,cli]"
+pip install "dbkit-sql[psycopg]"          # async + sync PostgreSQL
+pip install "dbkit-sql[psycopg,yaml,prometheus,otel,cli]"
 ```
+
+> The PyPI distribution is `dbkit-sql` (the name `dbkit` was already taken) — but the import
+> stays `import dbkit` regardless of which extras you install.
 
 ## Quickstart (async)
 
@@ -111,7 +114,7 @@ python examples/run_all.py            # runs every example, safe to repeat
 ## CLI
 
 ```bash
-pip install "dbkit[cli]"
+pip install "dbkit-sql[cli]"
 dbkit config-validate config.yaml
 dbkit check config.yaml           # validate + full readiness check
 dbkit pools config.yaml           # warm a connection, print pool status
