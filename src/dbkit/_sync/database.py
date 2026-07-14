@@ -566,19 +566,7 @@ class Database:
         """
         route = self._resolve(target)
         entry = self._registry.get(route)
-        manager = _TransactionManager(
-            entry.engine,
-            is_postgres=self._is_postgres(entry),
-            default_timeout=self._config.defaults.transaction_timeout_seconds,
-            database=entry.key.database,
-            shard_id=entry.key.shard_id,
-            role=entry.key.role,
-            isolation=isolation,
-            read_only=read_only,
-            timeout=timeout,
-            lock_timeout=lock_timeout,
-            query_name="transaction",
-        )
+        labels = self._labels(entry, "transaction", "transaction")
         with self._tracer.span(
             "dbkit.transaction",
             operation_type="transaction",
@@ -586,7 +574,26 @@ class Database:
             database=entry.key.database,
             shard=entry.key.shard_id,
             role=entry.key.role,
-        ):
+        ) as span:
+            manager = _TransactionManager(
+                entry.engine,
+                is_postgres=self._is_postgres(entry),
+                default_timeout=self._config.defaults.transaction_timeout_seconds,
+                database=entry.key.database,
+                shard_id=entry.key.shard_id,
+                role=entry.key.role,
+                isolation=isolation,
+                read_only=read_only,
+                timeout=timeout,
+                lock_timeout=lock_timeout,
+                query_name="transaction",
+                metrics=self._metrics,
+                labels=labels,
+                long_transaction_warning_seconds=(
+                    self._config.defaults.long_transaction_warning_seconds
+                ),
+                span=span,
+            )
             with manager as scope:
                 yield scope
 

@@ -97,6 +97,21 @@ def test_max_engines_defaults_to_unbounded() -> None:
     assert cfg.evict_lru_engines is False
 
 
+def test_long_transaction_warning_seconds_default() -> None:
+    cfg = DbkitConfig.from_dict(BASE)
+    assert cfg.defaults.long_transaction_warning_seconds == 5.0
+
+
+def test_long_transaction_warning_seconds_override() -> None:
+    cfg = DbkitConfig.from_dict(
+        {
+            "defaults": {"long_transaction_warning_seconds": 1.5},
+            "databases": {"app": {"primary": {"url": "postgresql+psycopg://h/app"}}},
+        }
+    )
+    assert cfg.defaults.long_transaction_warning_seconds == 1.5
+
+
 def test_budget_not_enforced_when_disabled() -> None:
     data = {
         "defaults": {"pool": {"size": 50, "max_overflow": 0}},

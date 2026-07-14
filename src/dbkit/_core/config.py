@@ -162,6 +162,8 @@ class Defaults:
     driver: str = "psycopg"
     query_timeout_seconds: float = 2.0
     transaction_timeout_seconds: float = 5.0
+    #: Warn when an explicit transaction is held open longer than this (§10.5, §16).
+    long_transaction_warning_seconds: float = 5.0
     pool: PoolConfig = field(default_factory=PoolConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
@@ -449,6 +451,7 @@ def _defaults(data: Mapping[str, Any] | None) -> Defaults:
         driver=data.get("driver", "psycopg"),
         query_timeout_seconds=float(data.get("query_timeout_seconds", 2.0)),
         transaction_timeout_seconds=float(data.get("transaction_timeout_seconds", 5.0)),
+        long_transaction_warning_seconds=float(data.get("long_transaction_warning_seconds", 5.0)),
         pool=_pool(data.get("pool")) or PoolConfig(),
         retry=_retry(data.get("retry")),
         circuit_breaker=_circuit_breaker(data.get("circuit_breaker")),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -15,6 +16,8 @@ from dbkit.errors import (
     DatabaseResultError,
     DatabaseUniqueViolationError,
 )
+
+from ..conftest import RecordingMetrics
 
 pytestmark = pytest.mark.integration
 
@@ -97,6 +100,61 @@ async def test_transaction_commit(adb: AsyncDatabase) -> None:
         await tx.execute(INSERT, {"id": 11, "email": "u@x.com"})
     count = await adb.fetch_value(sql("SELECT count(*) FROM dbkit_users"), target=TARGET)
     assert count == 2
+
+
+async def test_transaction_metrics_and_long_running_warning(
+    base_config: dict, recording_metrics: RecordingMetrics, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = {
+        **base_config,
+        "defaults": {**base_config["defaults"], "long_transaction_warning_seconds": 0.2},
+    }
+    db = AsyncDatabase.from_config(cfg, metrics=recording_metrics)
+    await db.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="dbkit"):
+            async with db.transaction(target=TARGET) as tx:
+                await tx.execute(sql("SELECT pg_sleep(0.4)"))
+
+        long_running = [
+            r for r in caplog.records if r.dbkit["event"] == "database.transaction.long_running"
+        ]
+        assert len(long_running) == 1
+        assert long_running[0].dbkit["duration_ms"] >= 400
+        assert long_running[0].dbkit["outcome"] == "commit"
+
+        assert recording_metrics.count("db_transaction_total") == 1
+        assert len(recording_metrics.observe_calls) >= 1
+        tx_duration = [
+            v
+            for n, v, _ in recording_metrics.observe_calls
+            if n == "db_transaction_duration_seconds"
+        ]
+        assert tx_duration == [pytest.approx(tx_duration[0])]
+        assert tx_duration[0] >= 0.4
+        assert recording_metrics.count("db_transaction_rollback_total") == 0
+        assert recording_metrics.count("db_commit_unknown_total") == 0
+    finally:
+        await db.close()
+
+
+async def test_transaction_rollback_increments_rollback_metric_exactly_once(
+    base_config: dict, recording_metrics: RecordingMetrics
+) -> None:
+    db = AsyncDatabase.from_config(base_config, metrics=recording_metrics)
+    await db.start()
+    try:
+        await db.execute(CREATE, target=TARGET)
+        with pytest.raises(RuntimeError):
+            async with db.transaction(target=TARGET) as tx:
+                await tx.execute(INSERT, {"id": 900, "email": "x@x.com"})
+                raise RuntimeError("boom")
+
+        assert recording_metrics.count("db_transaction_total") == 1
+        assert recording_metrics.count("db_transaction_rollback_total") == 1
+        assert recording_metrics.count("db_commit_unknown_total") == 0
+    finally:
+        await db.close()
 
 
 async def test_transaction_rollback_on_error(adb: AsyncDatabase) -> None:

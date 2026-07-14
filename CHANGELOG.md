@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — Transaction instrumentation & long-transaction detection
+- `TX_TOTAL` / `TX_DURATION` / `TX_ROLLBACK` / `COMMIT_UNKNOWN` metrics are now actually
+  emitted on every transaction exit (commit, rollback, cancellation, commit-unknown) — these
+  constants existed since Phase 1 but were never wired up.
+- `database.transaction.long_running` warning log event when a transaction is held open
+  longer than `Defaults.long_transaction_warning_seconds` (default `5.0`), mirroring the
+  pool's existing long-connection-hold warning.
+- Transaction duration is set as a `dbkit.transaction` span attribute
+  (`db.transaction.duration_ms`) on every exit path.
+
 ### Added — Phase 1 (Core Runtime)
 - Configuration model with dict/env/YAML loaders, `${VAR}` expansion, startup validation,
   connection-budget calculation, and secret-free serialization.

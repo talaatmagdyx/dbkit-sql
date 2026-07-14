@@ -72,6 +72,27 @@ def slow_query_warning(
     )
 
 
+def long_transaction_warning(
+    *,
+    duration_ms: float,
+    threshold_ms: float,
+    database: str | None = None,
+    role: str | None = None,
+    outcome: str | None = None,
+) -> None:
+    """Warn when an explicit transaction was held open longer than the configured threshold —
+    the transaction analog of the pool's long-connection-hold warning (§10.5, §16)."""
+    log_event(
+        logging.WARNING,
+        "database.transaction.long_running",
+        database=database,
+        role=role,
+        duration_ms=round(duration_ms, 3),
+        threshold_ms=threshold_ms,
+        outcome=outcome,
+    )
+
+
 def redacted_params_for_log(
     params: Mapping[str, Any] | None,
     *,

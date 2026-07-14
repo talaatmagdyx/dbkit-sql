@@ -33,8 +33,11 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
 - Perf: dropped the redundant per-op `SET statement_timeout` round trip on the async path
   (client-side `asyncio.timeout` covers it), cutting small-read overhead from ~31% to ~6% over
   raw SQLAlchemy Core.
-
-Remaining for a later pass: long-transaction detection surfaced as a metric/warning.
+- Transaction instrumentation: `TX_TOTAL`/`TX_DURATION`/`TX_ROLLBACK`/`COMMIT_UNKNOWN` metrics
+  (previously declared but never emitted) plus long-transaction detection — a
+  `database.transaction.long_running` warning when a transaction is held open longer than
+  `Defaults.long_transaction_warning_seconds` (default 5.0), mirroring the pool's existing
+  long-connection-hold warning. Duration is also set as a `dbkit.transaction` span attribute.
 
 ## Phase 3 — High throughput ✅ (delivered)
 
@@ -78,6 +81,6 @@ first-class Celery/RabbitMQ subscriber adapter.
 - Failure-injection/load/soak suites and the benchmark harness were delivered alongside
   Phases 1–3 (see `docs/testing.md`).
 
-Remaining stretch items (not blocking, tracked for a later pass): long-transaction detection
-metric (Phase 2), psycopg pipeline mode / `unnest()` bulk strategy / a first-class RabbitMQ or
-Celery subscriber adapter (Phase 3), and a PgBouncer-compatible pooling mode.
+Remaining stretch items (not blocking, tracked for a later pass): psycopg pipeline mode /
+`unnest()` bulk strategy / a first-class RabbitMQ or Celery subscriber adapter (Phase 3), and
+a PgBouncer-compatible pooling mode.

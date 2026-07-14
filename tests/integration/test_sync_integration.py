@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -9,6 +10,8 @@ import pytest
 
 from dbkit import Database, DatabaseTarget, Query, sql
 from dbkit.errors import DatabaseUniqueViolationError
+
+from ..conftest import RecordingMetrics
 
 pytestmark = pytest.mark.integration
 
@@ -80,6 +83,53 @@ def test_sync_unique_violation(sdb: Database) -> None:
     sdb.execute(INSERT, {"id": 5, "email": "dup@x.com"}, target=TARGET)
     with pytest.raises(DatabaseUniqueViolationError):
         sdb.execute(INSERT, {"id": 6, "email": "dup@x.com"}, target=TARGET)
+
+
+def test_sync_transaction_metrics_and_long_running_warning(
+    base_config: dict, recording_metrics: RecordingMetrics, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = {
+        **base_config,
+        "defaults": {**base_config["defaults"], "long_transaction_warning_seconds": 0.2},
+    }
+    db = Database.from_config(cfg, metrics=recording_metrics)
+    db.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="dbkit"):
+            with db.transaction(target=TARGET) as tx:
+                tx.execute(sql("SELECT pg_sleep(0.4)"))
+
+        long_running = [
+            r for r in caplog.records if r.dbkit["event"] == "database.transaction.long_running"
+        ]
+        assert len(long_running) == 1
+        assert long_running[0].dbkit["duration_ms"] >= 400
+        assert long_running[0].dbkit["outcome"] == "commit"
+
+        assert recording_metrics.count("db_transaction_total") == 1
+        assert recording_metrics.count("db_transaction_rollback_total") == 0
+        assert recording_metrics.count("db_commit_unknown_total") == 0
+    finally:
+        db.close()
+
+
+def test_sync_transaction_rollback_increments_rollback_metric_exactly_once(
+    base_config: dict, recording_metrics: RecordingMetrics
+) -> None:
+    db = Database.from_config(base_config, metrics=recording_metrics)
+    db.start()
+    try:
+        db.execute(CREATE, target=TARGET)
+        with pytest.raises(RuntimeError):
+            with db.transaction(target=TARGET) as tx:
+                tx.execute(INSERT, {"id": 901, "email": "y@x.com"})
+                raise RuntimeError("boom")
+
+        assert recording_metrics.count("db_transaction_total") == 1
+        assert recording_metrics.count("db_transaction_rollback_total") == 1
+        assert recording_metrics.count("db_commit_unknown_total") == 0
+    finally:
+        db.close()
 
 
 def test_sync_health(sdb: Database) -> None:

@@ -12,6 +12,7 @@ is rolled back, the connection invalidated, and the cancellation re-raised — n
 from __future__ import annotations
 
 import contextlib
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -23,6 +24,9 @@ from .._core.errors import (
     DatabaseCommitUnknownError,
     classify,
 )
+from ..observability import logging as obslog
+from ..observability import metrics as m
+from ..observability.metrics import MetricsSink, NoopMetrics
 from ._compat import cancellation_shield, is_cancellation
 from .connection import ConnectionScope, apply_statement_timeout_sql
 
@@ -87,6 +91,10 @@ class _TransactionManager:
         timeout: float | None,
         lock_timeout: float | None,
         query_name: str,
+        metrics: MetricsSink | None = None,
+        labels: dict[str, str] | None = None,
+        long_transaction_warning_seconds: float = 5.0,
+        span: Any = None,
     ) -> None:
         self._engine = engine
         self._is_postgres = is_postgres
@@ -99,9 +107,14 @@ class _TransactionManager:
         self._timeout = timeout if timeout is not None else default_timeout
         self._lock_timeout = lock_timeout
         self._query_name = query_name
+        self._metrics = metrics or NoopMetrics()
+        self._labels = labels or {"database": database, "shard": shard_id, "role": role}
+        self._long_transaction_warning = long_transaction_warning_seconds
+        self._span = span
         self._conn: Connection | None = None
         self._trans: Any = None
         self._scope: TransactionScope | None = None
+        self._started_at: float = 0.0
 
     def __enter__(self) -> TransactionScope:
         try:
@@ -115,6 +128,7 @@ class _TransactionManager:
             raise classify(
                 exc, query_name=self._query_name, database_name=self._database, role=self._role
             ) from exc
+        self._started_at = time.monotonic()
         self._scope = TransactionScope(
             self._conn,
             is_postgres=self._is_postgres,
@@ -142,13 +156,39 @@ class _TransactionManager:
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         assert self._conn is not None
+        outcome = "commit"
         try:
             if exc is not None:
+                outcome = "cancelled" if is_cancellation(exc) else "rollback"
                 self._rollback(cancelled=is_cancellation(exc))
                 return False  # propagate the original exception
-            self._commit()
+            try:
+                self._commit()
+            except DatabaseCommitUnknownError:
+                outcome = "commit_unknown"
+                raise
+            except BaseException:
+                outcome = "rollback"  # _commit() already attempted an internal rollback
+                raise
             return False
         finally:
+            duration = time.monotonic() - self._started_at
+            self._metrics.incr(m.TX_TOTAL, labels=self._labels)
+            self._metrics.observe(m.TX_DURATION, duration, labels=self._labels)
+            if outcome in ("rollback", "cancelled"):
+                self._metrics.incr(m.TX_ROLLBACK, labels=self._labels)
+            elif outcome == "commit_unknown":
+                self._metrics.incr(m.COMMIT_UNKNOWN, labels=self._labels)
+            if self._span is not None:
+                self._span.set_attribute("db.transaction.duration_ms", round(duration * 1000, 3))
+            if duration >= self._long_transaction_warning:
+                obslog.long_transaction_warning(
+                    duration_ms=duration * 1000,
+                    threshold_ms=self._long_transaction_warning * 1000,
+                    database=self._database,
+                    role=self._role,
+                    outcome=outcome,
+                )
             self._release()
 
     def _commit(self) -> None:

@@ -10,8 +10,36 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
+
+
+class RecordingMetrics:
+    """A :class:`dbkit.observability.metrics.MetricsSink` test double that records every call
+    instead of forwarding to a real backend, so tests can assert exactly what was emitted."""
+
+    def __init__(self) -> None:
+        self.incr_calls: list[tuple[str, float, dict[str, str]]] = []
+        self.observe_calls: list[tuple[str, float, dict[str, str]]] = []
+        self.gauge_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def incr(self, name: str, value: float = 1.0, labels: Any = None) -> None:
+        self.incr_calls.append((name, value, dict(labels or {})))
+
+    def observe(self, name: str, value: float, labels: Any = None) -> None:
+        self.observe_calls.append((name, value, dict(labels or {})))
+
+    def gauge(self, name: str, value: float, labels: Any = None) -> None:
+        self.gauge_calls.append((name, value, dict(labels or {})))
+
+    def count(self, name: str) -> int:
+        return sum(1 for n, _, _ in self.incr_calls if n == name)
+
+
+@pytest.fixture
+def recording_metrics() -> RecordingMetrics:
+    return RecordingMetrics()
 
 
 def _sync_dsn(async_dsn: str) -> str:
