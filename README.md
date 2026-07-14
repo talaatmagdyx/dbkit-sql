@@ -482,9 +482,9 @@ resilience/chaos, sharding/replicas, and the CLI; no COPY/pipeline mode).
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the ground rules (no ORM, never hand-edit
 `_sync/`, pure logic stays in `_core/`) and [`docs/testing.md`](docs/testing.md) for the local
 quality gates (`ruff`, `mypy --strict`, the full test/integration suite) to run before opening a
-PR. Found a real vulnerability? Please open a GitHub issue with minimal reproduction details
-rather than a public PR with an exploit — see [`docs/security.md`](docs/security.md) for the
-documented security posture first.
+PR. Found a real vulnerability? **Do not open a public issue** — follow
+[`SECURITY.md`](SECURITY.md) to report it privately. See [`docs/security.md`](docs/security.md)
+for the documented security posture.
 
 ## License
 

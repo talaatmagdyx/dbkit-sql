@@ -1,0 +1,51 @@
+# dbkit pins its runtime deps to floors (sqlalchemy>=2.0.30, psycopg>=3.2,
+# asyncpg>=0.29 — see pyproject.toml) but the regular CI jobs only ever install
+# whatever pip currently resolves within those ranges, which drifts toward
+# "latest" over time and never actually exercises the pinned MINIMUM. This job
+# tests both ends of each range nightly, against a real PostgreSQL, so a real
+# incompatibility at either boundary is caught before a user hits it.
+name: Dependency matrix
+
+on:
+  schedule:
+    # Nightly, 02:00 UTC.
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sqlalchemy-version: ["2.0.30", "latest"]
+        driver-floor: ["floor", "latest"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dbkit
+          POSTGRES_PASSWORD: dbkit
+          POSTGRES_DB: dbkit
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dbkit"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    env:
+      DBKIT_TEST_DSN: postgresql+psycopg://dbkit:dbkit@localhost:5432/dbkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+      - name: Pin SQLAlchemy to matrix version
+        if: matrix.sqlalchemy-version != 'latest'
+        run: uv pip install "sqlalchemy[asyncio]==${{ matrix.sqlalchemy-version }}"
+      - name: Pin drivers to their floors
+        if: matrix.driver-floor == 'floor'
+        run: uv pip install "psycopg[binary]==3.2.0" "asyncpg==0.29.0"
+      - name: Unit + integration suite
+        run: uv run pytest -q
