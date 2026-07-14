@@ -58,14 +58,16 @@ A custom asyncio/monotonic harness (no external bench framework). Starts one con
 uses `--dsn` / `DBKIT_BENCH_DSN`.
 
 ```bash
-make bench                                    # overhead, throughput, latency, batch
-python -m benchmarks --only overhead --dsn "$DBKIT_TEST_DSN"
+make bench                                    # overhead, throughput, latency, batch, crud
+python -m benchmarks --only crud --dsn "$DBKIT_TEST_DSN"
 ```
 
 - **overhead** — A/B vs raw psycopg and raw SQLAlchemy Core (headline overhead %).
 - **throughput** — ops/s for small reads and single-row inserts (async + sync).
 - **latency** — open-loop paced P50/P95/P99.
-- **batch** — `execute_many` vs per-row.
+- **batch** — `execute_many` vs per-row vs COPY.
+- **crud** — INSERT, SELECT (point + range), UPDATE, UPSERT, DELETE: ops/s and P50/P99
+  latency per operation, on both frontends (`--only crud`).
 
 Results persist to `benchmarks/results/run_<ts>.json` and print a regression delta vs the
 previous run. Metric keys encode direction (`*_ops_s` higher-better, `*_ms`/`*_pct` lower-better).

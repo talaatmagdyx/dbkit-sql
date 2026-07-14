@@ -63,3 +63,12 @@ All notable changes to this project are documented here. The format is based on
 - Config: `BulkConfig` (batch-sizing defaults).
 - Benchmarks: batch suite gains a COPY lane; tests cover streaming, all bulk modes, upsert,
   COPY, and inbox idempotency on both frontends.
+
+### Added — Examples & CRUD benchmark
+- `examples/`: a runnable, idempotent script for every feature (transactions & savepoints,
+  error classification, retries & circuit breaker, streaming, bulk insert/upsert, COPY,
+  exactly-once consumer processing, micro-batching, health/pool introspection, sync/async
+  parity) plus `run_all.py` to execute them all against one database.
+- `benchmarks/bench_crud.py` (`--only crud`): a single report covering INSERT, SELECT (point
+  + range), UPDATE, UPSERT, and DELETE — throughput (ops/s) and per-operation P50/P99 latency,
+  on both frontends.
