@@ -61,6 +61,11 @@ TX_DURATION = "db_transaction_duration_seconds"
 TX_ROLLBACK = "db_transaction_rollback_total"
 COMMIT_UNKNOWN = "db_commit_unknown_total"
 
+STREAM_ROWS = "db_stream_rows_total"
+STREAM_BYTES = "db_stream_bytes_total"
+BULK_ROWS = "db_bulk_rows_total"
+BULK_BATCH_SIZE = "db_bulk_batch_size"
+
 #: Labels dbkit is allowed to attach (§25.1). Adapters should reject anything outside this set.
 ALLOWED_LABELS = frozenset(
     {

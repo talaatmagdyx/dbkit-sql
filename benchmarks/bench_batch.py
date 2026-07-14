@@ -50,6 +50,14 @@ async def _execute_many(db: AsyncDatabase) -> float:
     return ROWS / (time.monotonic() - start)
 
 
+async def _copy(db: AsyncDatabase) -> float:
+    await db.execute(sql("TRUNCATE dbkit_batch"), target=TARGET)
+    records = [(i, i) for i in range(ROWS)]
+    start = time.monotonic()
+    await db.copy_records("dbkit_batch", ["id", "v"], records, target=TARGET)
+    return ROWS / (time.monotonic() - start)
+
+
 async def _run_async(dsn: str) -> dict[str, float]:
     await _setup(dsn)
     db = AsyncDatabase.from_config(
@@ -66,15 +74,24 @@ async def _run_async(dsn: str) -> dict[str, float]:
     try:
         per_row = [await _per_row(db) for _ in range(REPS)]
         many = [await _execute_many(db) for _ in range(REPS)]
+        copy = [await _copy(db) for _ in range(REPS)]
     finally:
         await db.close()
-    sp, sm = _stats.robust(per_row), _stats.robust(many)
-    speedup = sm["median"] / sp["median"] if sp["median"] else 0.0
+    sp, sm, sc = _stats.robust(per_row), _stats.robust(many), _stats.robust(copy)
     _common.rule("batch insert (async)")
     print(f"  per-row        {_stats.fmt_rate(sp, 'rows/s')}")
     print(f"  execute_many   {_stats.fmt_rate(sm, 'rows/s')}")
-    print(f"  speedup: {speedup:.1f}x")
-    return {"batch_per_row_rows_s": sp["median"], "batch_execute_many_rows_s": sm["median"]}
+    print(f"  COPY           {_stats.fmt_rate(sc, 'rows/s')}")
+    if sp["median"]:
+        print(
+            f"  execute_many speedup: {sm['median'] / sp['median']:.1f}x  "
+            f"COPY speedup: {sc['median'] / sp['median']:.1f}x"
+        )
+    return {
+        "batch_per_row_rows_s": sp["median"],
+        "batch_execute_many_rows_s": sm["median"],
+        "batch_copy_rows_s": sc["median"],
+    }
 
 
 def run_all(dsn: str) -> dict[str, float]:

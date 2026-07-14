@@ -1,9 +1,8 @@
 """The ``AsyncDatabase`` facade — the primary public entrypoint (§8.1).
 
 Orchestrates target resolution, engine lookup, connection acquisition (measuring pool wait),
-execution, metrics, and graceful startup/shutdown. Bulk and streaming methods are declared
-here and raise :class:`DatabaseUnsupportedOperationError` until Phase 3, so the API surface is
-stable from day one.
+execution, resilience (retries/circuit breaker/concurrency limits), streaming, bulk writes,
+COPY, metrics, and graceful startup/shutdown.
 """
 
 from __future__ import annotations
@@ -14,8 +13,10 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from sqlalchemy import Table, insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from .._core import bulk as bulk_mod
 from .._core.circuit import CircuitBreaker
 from .._core.config import DbkitConfig
 from .._core.errors import (
@@ -32,11 +33,12 @@ from .._pool import PoolSnapshot
 from ..observability import logging as obslog
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink, NoopMetrics
-from ._compat import API_LABEL
+from ._compat import API_LABEL, copy_from_records
 from .connection import AsyncConnectionScope, run_execute
 from .engine import AsyncEngineRegistry, EngineEntry
 from .health import HealthReport, TargetHealth, ping
 from .resilience import ConcurrencyLimiter, run_with_retries
+from .streaming import AsyncResultStream
 from .transaction import _AsyncTransactionManager
 
 
@@ -541,19 +543,264 @@ class AsyncDatabase:
     def pool_status(self) -> list[PoolSnapshot]:
         return self._registry.snapshots()
 
-    # -- Phase 3 stubs ------------------------------------------------------------ #
+    # -- streaming ---------------------------------------------------------------- #
 
-    def stream(self, *args: object, **kwargs: object) -> Any:
-        raise DatabaseUnsupportedOperationError("stream() arrives in Phase 3")
+    async def stream(
+        self,
+        query: object,
+        params: Mapping[str, Any] | None = None,
+        *,
+        target: DatabaseTarget,
+        batch_size: int = 1000,
+        map_to: Any = None,
+        max_duration: float | None = None,
+    ) -> AsyncResultStream:
+        """Stream a large result set with a server-side cursor, bounded memory (§20).
 
-    async def insert_many(self, *args: object, **kwargs: object) -> Any:
-        raise DatabaseUnsupportedOperationError("insert_many() arrives in Phase 3")
+        Usage::
 
-    async def upsert_many(self, *args: object, **kwargs: object) -> Any:
-        raise DatabaseUnsupportedOperationError("upsert_many() arrives in Phase 3")
+            async with await db.stream(EXPORT, params, target=t, batch_size=1000) as rows:
+                async for row in rows:
+                    ...
 
-    async def copy_records(self, *args: object, **kwargs: object) -> Any:
-        raise DatabaseUnsupportedOperationError("copy_records() arrives in Phase 3")
+        The stream owns its connection until the context exits, so it bypasses auto-retry.
+        """
+        entry, _route = await self._entry(target)
+        statement = coerce_statement(query)
+        query_name, operation, _q = self._query_meta(query)
+        labels = self._labels(entry, query_name, operation)
+        return AsyncResultStream(
+            entry.engine,
+            statement,
+            params,
+            batch_size=batch_size,
+            map_to=map_to,
+            database=entry.key.database,
+            role=entry.key.role,
+            query_name=query_name,
+            metrics=self._metrics,
+            labels=labels,
+            max_duration=max_duration,
+        )
+
+    # -- bulk writes -------------------------------------------------------------- #
+
+    async def insert_many(
+        self,
+        table: Table,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        target: DatabaseTarget,
+        mode: bulk_mod.FailureMode = "atomic",
+        batch_size: int | None = None,
+        timeout: float | None = None,
+    ) -> ExecutionResult:
+        """Insert many rows in adaptively-sized batches (§19). ``rows`` are param dicts."""
+        return await self._bulk_write(
+            table,
+            insert(table),
+            rows,
+            target=target,
+            mode=mode,
+            batch_size=batch_size,
+            timeout=timeout,
+            query_name=f"{table.name}.insert_many",
+        )
+
+    async def upsert_many(
+        self,
+        table: Table,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        target: DatabaseTarget,
+        conflict_index_elements: Sequence[str],
+        update_columns: Sequence[str] | None = None,
+        mode: bulk_mod.FailureMode = "atomic",
+        batch_size: int | None = None,
+        timeout: float | None = None,
+    ) -> ExecutionResult:
+        """Upsert many rows via PostgreSQL ``ON CONFLICT`` (§19). ``update_columns=None`` means
+        ``DO NOTHING``; otherwise those columns are updated from the proposed row."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        base = pg_insert(table)
+        if update_columns is None:
+            stmt = base.on_conflict_do_nothing(index_elements=list(conflict_index_elements))
+        else:
+            stmt = base.on_conflict_do_update(
+                index_elements=list(conflict_index_elements),
+                set_={c: base.excluded[c] for c in update_columns},
+            )
+        return await self._bulk_write(
+            table,
+            stmt,
+            rows,
+            target=target,
+            mode=mode,
+            batch_size=batch_size,
+            timeout=timeout,
+            query_name=f"{table.name}.upsert_many",
+        )
+
+    async def _bulk_write(
+        self,
+        table: Table,
+        statement: Any,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        target: DatabaseTarget,
+        mode: bulk_mod.FailureMode,
+        batch_size: int | None,
+        timeout: float | None,
+        query_name: str,
+    ) -> ExecutionResult:
+        start = time.monotonic()
+        if not rows:
+            return ExecutionResult(
+                row_count=0, query_name=query_name, database_name=target.database, duration_ms=0.0
+            )
+        entry, _route = await self._entry(target)
+        labels = self._labels(entry, query_name, "write")
+        limiter = self._limiter_for(entry.key.database)
+        bulk_cfg = self._config.defaults.bulk
+        n_cols = len(bulk_mod.column_names(list(rows)))
+        batch_rows = bulk_mod.resolve_batch_rows(
+            n_cols,
+            batch_size or bulk_cfg.default_batch_rows,
+            bulk_mod.BulkLimits(max_rows=bulk_cfg.max_batch_rows),
+        )
+        batches = list(bulk_mod.iter_batches(list(rows), batch_rows))
+        self._metrics.observe(m.BULK_BATCH_SIZE, batch_rows, labels=labels)
+        eff_timeout = timeout or self._config.defaults.transaction_timeout_seconds
+
+        written = 0
+        async with limiter.acquire("database"), limiter.acquire("bulk"):
+            if mode == "atomic":
+                async with self.transaction(target=target, timeout=eff_timeout) as tx:
+                    for batch in batches:
+                        try:
+                            cursor = await run_execute(
+                                tx.raw,
+                                statement,
+                                list(batch),
+                                timeout=eff_timeout,
+                                is_postgres=self._is_postgres(entry),
+                            )
+                        except Exception as exc:
+                            raise classify(
+                                exc, query_name=query_name, database_name=target.database
+                            ) from exc
+                        written += (
+                            cursor.rowcount
+                            if cursor.rowcount and cursor.rowcount > 0
+                            else len(batch)
+                        )
+            else:
+                written = await self._bulk_best_effort(
+                    entry, statement, batches, mode=mode, timeout=eff_timeout, query_name=query_name
+                )
+
+        self._metrics.incr(m.BULK_ROWS, written, labels=labels)
+        return ExecutionResult(
+            row_count=written,
+            query_name=query_name,
+            database_name=target.database,
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
+
+    async def _bulk_best_effort(
+        self,
+        entry: EngineEntry,
+        statement: Any,
+        batches: list[Any],
+        *,
+        mode: bulk_mod.FailureMode,
+        timeout: float,
+        query_name: str,
+    ) -> int:
+        """best_effort: each batch commits independently; split_on_failure additionally retries a
+        failed batch row-by-row to isolate the bad rows (§19.3)."""
+        target = DatabaseTarget(database=entry.key.database, role="write")
+        written = 0
+        for batch in batches:
+            try:
+                async with self._scope(
+                    target, query_name, call_timeout=timeout, deadline=None, commit=True
+                ) as scope:
+                    cursor = await run_execute(
+                        scope.raw,
+                        statement,
+                        list(batch),
+                        timeout=timeout,
+                        is_postgres=self._is_postgres(entry),
+                    )
+                    written += (
+                        cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(batch)
+                    )
+            except Exception:
+                if mode != "split_on_failure":
+                    continue
+                for row in batch:
+                    try:
+                        async with self._scope(
+                            target, query_name, call_timeout=timeout, deadline=None, commit=True
+                        ) as scope:
+                            await run_execute(
+                                scope.raw,
+                                statement,
+                                [row],
+                                timeout=timeout,
+                                is_postgres=self._is_postgres(entry),
+                            )
+                            written += 1
+                    except Exception:
+                        continue
+        return written
+
+    # -- COPY (PostgreSQL fast bulk ingest) --------------------------------------- #
+
+    async def copy_records(
+        self,
+        table: str,
+        columns: Sequence[str],
+        records: Any,
+        *,
+        target: DatabaseTarget,
+        timeout: float | None = None,
+    ) -> ExecutionResult:
+        """Bulk-ingest ``records`` into ``table`` via PostgreSQL COPY (§19.2).
+
+        ``records`` is an iterable (async or sync) of row sequences matching ``columns``.
+        Fastest path for large ingests; PostgreSQL + psycopg only.
+        """
+        entry, _route = await self._entry(target)
+        if not self._is_postgres(entry):
+            raise DatabaseUnsupportedOperationError("COPY is only supported on PostgreSQL")
+        labels = self._labels(entry, f"{table}.copy", "write")
+        limiter = self._limiter_for(entry.key.database)
+        eff_timeout = timeout or self._config.defaults.transaction_timeout_seconds
+        start = time.monotonic()
+        written = 0
+        # COPY runs on the raw driver connection, so it must sit inside an explicit
+        # transaction (which begins the SQLAlchemy transaction) for the commit to persist it.
+        async with (
+            limiter.acquire("database"),
+            limiter.acquire("bulk"),
+            self.transaction(target=target, timeout=eff_timeout) as tx,
+        ):
+            try:
+                written = await copy_from_records(tx.raw, table, list(columns), records)
+            except Exception as exc:
+                raise classify(
+                    exc, query_name=f"{table}.copy", database_name=target.database
+                ) from exc
+        self._metrics.incr(m.BULK_ROWS, written, labels=labels)
+        return ExecutionResult(
+            row_count=written,
+            query_name=f"{table}.copy",
+            database_name=target.database,
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
 
 
 def _make_default_metrics(config: DbkitConfig) -> MetricsSink:

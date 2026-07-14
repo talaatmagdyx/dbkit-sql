@@ -28,6 +28,23 @@ def sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
+def stream_mappings(conn: Any, statement: Any, params: Any, batch_size: int) -> Iterator[Any]:
+    """Yield row mappings from a server-side cursor without buffering the full result.
+
+    The sync build uses ``yield_per`` execution options so SQLAlchemy streams rows in
+    ``batch_size`` chunks rather than materializing the whole result (§20).
+    """
+    result = conn.execution_options(yield_per=batch_size).execute(statement, params or {})
+    yield from result.mappings()
+
+
+def copy_from_records(sa_conn: Any, table: str, columns: Any, records: Any) -> int:
+    """Dispatch to the sync PostgreSQL COPY implementation (§19.2)."""
+    from ..postgres.copy import copy_records_sync
+
+    return copy_records_sync(sa_conn, table, columns, records)
+
+
 def timeout_scope(seconds: float | None) -> contextlib.AbstractContextManager[None]:
     """No client-side deadline in the sync build; server ``statement_timeout`` does the work."""
     return contextlib.nullcontext()

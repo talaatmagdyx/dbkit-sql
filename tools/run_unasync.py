@@ -65,6 +65,7 @@ TOKENS: dict[str, str] = {
     "__aexit__": "__exit__",
     "__aiter__": "__iter__",
     "__anext__": "__next__",
+    "StopAsyncIteration": "StopIteration",
     "async def": "def",
     "async with": "with",
     "async for": "for",

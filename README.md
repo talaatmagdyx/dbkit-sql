@@ -12,9 +12,11 @@ message consumers, background workers, and CLIs.
 - **PostgreSQL first-class** (psycopg 3 default, asyncpg optional), general across any
   SQLAlchemy backend.
 
-> Status: **alpha**. Phase 1 (core runtime: config, pooling, transactions, typed results,
-> health, observability) is the current focus. See `docs/requirements.md` for the full spec
-> and `docs/roadmap.md` for phased delivery.
+> Status: **alpha**. Phases 1–3 are delivered: core runtime (config, pooling, transactions,
+> typed results, health, observability), resilience (retries, circuit breaker, concurrency
+> limits), and high-throughput paths (streaming, bulk insert/upsert, PostgreSQL COPY, inbox /
+> exactly-once consumer helpers). See `docs/requirements.md` for the full spec, `docs/roadmap.md`
+> for phased delivery, and `docs/testing.md` for the test/chaos/benchmark commands.
 
 ## Install
 

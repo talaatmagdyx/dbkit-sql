@@ -49,3 +49,17 @@ All notable changes to this project are documented here. The format is based on
 - Performance: the async path no longer issues a per-operation `SET statement_timeout` round
   trip (client-side `asyncio.timeout` bounds the statement); small-read overhead vs raw
   SQLAlchemy Core dropped from ~31% to ~6%. The sync path keeps the server-side timeout.
+
+### Added — Phase 3 (High throughput)
+- `db.stream(...)` — server-side cursor streaming with bounded memory, `max_duration` guard,
+  and guaranteed connection release (async: `AsyncConnection.stream`; sync: `yield_per`).
+- `db.insert_many(table, rows, ...)` and `db.upsert_many(table, rows, ...)` — adaptive batch
+  sizing (bounded by rows and PostgreSQL's 65535 bind-param ceiling) with `atomic`,
+  `best_effort`, and `split_on_failure` modes.
+- `db.copy_records(table, columns, records, ...)` — PostgreSQL COPY via the psycopg raw-driver
+  escape hatch; ~90× faster than per-row inserts in the batch benchmark.
+- `dbkit.integrations`: `inbox_ddl` / `process_once` / `ack_after_commit` (exactly-once
+  message processing, §28) and `BatchCollector` (consumer micro-batching).
+- Config: `BulkConfig` (batch-sizing defaults).
+- Benchmarks: batch suite gains a COPY lane; tests cover streaming, all bulk modes, upsert,
+  COPY, and inbox idempotency on both frontends.

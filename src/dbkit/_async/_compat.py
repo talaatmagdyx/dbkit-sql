@@ -32,6 +32,24 @@ async def sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
+async def stream_mappings(conn: Any, statement: Any, params: Any, batch_size: int) -> Any:
+    """Yield row mappings from a server-side cursor without buffering the full result.
+
+    Async uses ``AsyncConnection.stream`` (a real server-side cursor); the sync build uses
+    ``yield_per`` execution options. Both fetch in ``batch_size`` chunks (§20).
+    """
+    result = await conn.stream(statement, params or {}, execution_options={"yield_per": batch_size})
+    async for row in result.mappings():
+        yield row
+
+
+async def copy_from_records(sa_conn: Any, table: str, columns: Any, records: Any) -> int:
+    """Dispatch to the async PostgreSQL COPY implementation (§19.2)."""
+    from ..postgres.copy import copy_records_async
+
+    return await copy_records_async(sa_conn, table, columns, records)
+
+
 def timeout_scope(seconds: float | None) -> contextlib.AbstractAsyncContextManager[Any]:
     """A client-side deadline. Async uses :func:`asyncio.timeout`; the sync build has no
     client-side timeout and relies on the server ``statement_timeout`` instead (§12.1)."""

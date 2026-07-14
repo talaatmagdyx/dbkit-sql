@@ -33,12 +33,19 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
 
 Remaining for a later pass: long-transaction detection surfaced as a metric/warning.
 
-## Phase 3 — High throughput
+## Phase 3 — High throughput ✅ (delivered)
 
-Bulk insert/upsert with adaptive batch sizing; PostgreSQL COPY (both directions);
-`unnest()` array inserts; streaming (`yield_per`, idle timeout, guaranteed release);
-psycopg pipeline mode; RabbitMQ integration (ack-after-commit, DLQ, commit-unknown handling,
-`BatchCollector`, inbox helper); Celery integration.
+- Streaming (`db.stream`): server-side cursor / `yield_per`, bounded memory, max-duration guard,
+  guaranteed connection release; both frontends.
+- Bulk `insert_many` / `upsert_many` (PostgreSQL `ON CONFLICT`) with adaptive batch sizing
+  (rows/bind-param ceiling) and `atomic` | `best_effort` | `split_on_failure` modes.
+- PostgreSQL `COPY` (`db.copy_records`) via the psycopg raw-driver escape hatch — ~90× faster
+  than per-row inserts in-benchmark; bounded memory.
+- Consumer integration (`dbkit.integrations`): inbox dedup + `process_once` + `ack_after_commit`
+  (§28 exactly-once flow) and `BatchCollector` micro-batching.
+
+Remaining for a later pass: psycopg pipeline mode, `unnest()` array-insert strategy, a
+first-class Celery/RabbitMQ subscriber adapter.
 
 ## Phase 4 — Multi-database & sharding
 

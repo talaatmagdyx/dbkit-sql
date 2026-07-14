@@ -118,6 +118,15 @@ class ConcurrencyConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BulkConfig:
+    """Batch-sizing defaults for bulk operations (§19.1)."""
+
+    default_batch_rows: int = 1000
+    max_batch_rows: int = 10000
+    max_payload_bytes: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CircuitBreakerConfig:
     """Per db+shard+role circuit breaker settings (§16)."""
 
@@ -156,6 +165,7 @@ class Defaults:
     pool: PoolConfig = field(default_factory=PoolConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
+    bulk: BulkConfig = field(default_factory=BulkConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
     def validate(self) -> None:
@@ -353,6 +363,17 @@ def _retry(data: Mapping[str, Any] | None) -> RetryConfig:
     )
 
 
+def _bulk(data: Mapping[str, Any] | None) -> BulkConfig:
+    if data is None:
+        return BulkConfig()
+    payload = data.get("max_payload_bytes")
+    return BulkConfig(
+        default_batch_rows=int(data.get("default_batch_rows", 1000)),
+        max_batch_rows=int(data.get("max_batch_rows", 10000)),
+        max_payload_bytes=int(payload) if payload is not None else None,
+    )
+
+
 def _circuit_breaker(data: Mapping[str, Any] | None) -> CircuitBreakerConfig:
     if data is None:
         return CircuitBreakerConfig()
@@ -408,6 +429,7 @@ def _defaults(data: Mapping[str, Any] | None) -> Defaults:
         pool=_pool(data.get("pool")) or PoolConfig(),
         retry=_retry(data.get("retry")),
         circuit_breaker=_circuit_breaker(data.get("circuit_breaker")),
+        bulk=_bulk(data.get("bulk")),
         observability=_observability(data.get("observability")),
     )
 
