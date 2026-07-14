@@ -14,6 +14,29 @@ from typing import Any
 
 logger = logging.getLogger("dbkit")
 
+try:
+    from opentelemetry import trace as _otel_trace
+
+    _OTEL_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised by the no-otel test lane
+    _OTEL_AVAILABLE = False
+
+
+def _trace_context() -> dict[str, str]:
+    """``trace_id``/``span_id`` of the current OTel span, for trace/log correlation (§25.2/§25.3).
+
+    Empty if OTel isn't installed or no span is currently recording. The availability check is
+    done once at import time (not per call) so this stays cheap on the hot logging path even
+    when OTel isn't installed — a per-call ``import opentelemetry`` would otherwise re-walk
+    ``sys.path`` on every log event, since failed imports aren't cached in ``sys.modules``.
+    """
+    if not _OTEL_AVAILABLE:
+        return {}
+    ctx = _otel_trace.get_current_span().get_span_context()
+    if not ctx.is_valid:
+        return {}
+    return {"trace_id": format(ctx.trace_id, "032x"), "span_id": format(ctx.span_id, "016x")}
+
 
 def log_event(
     level: int,
@@ -47,6 +70,7 @@ def log_event(
     ):
         if value is not None:
             payload[key] = value
+    payload.update(_trace_context())
     payload.update(extra)
     logger.log(level, event, extra={"dbkit": payload})
 

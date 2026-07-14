@@ -80,6 +80,38 @@ def test_enabled_tracer_records_exception_status(span_exporter) -> None:
     assert spans[0].events[0].name == "exception"
 
 
+def test_span_kind_is_client(span_exporter) -> None:
+    """Database client spans must use SpanKind.CLIENT per the OTel semantic conventions."""
+    from opentelemetry.trace import SpanKind
+
+    tracer = make_tracer(enabled=True)
+    with tracer.span("dbkit.read", query_name="q"):
+        pass
+
+    (recorded,) = span_exporter.get_finished_spans()
+    assert recorded.kind == SpanKind.CLIENT
+
+
+def test_tracer_accepts_explicit_tracer_provider() -> None:
+    """A caller-supplied tracer_provider is used instead of the (possibly unset) global one."""
+    pytest.importorskip("opentelemetry.sdk.trace")
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    tracer = make_tracer(enabled=True, tracer_provider=provider)
+    with tracer.span("dbkit.read", query_name="q"):
+        pass
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "dbkit.read"
+
+
 def test_no_span_attributes_ever_contain_sql_text(span_exporter) -> None:
     """Statement text/params must never reach a span (§25.2, §29) — only logical metadata."""
     tracer = make_tracer(enabled=True)

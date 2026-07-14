@@ -9,7 +9,8 @@ name, target metadata, and outcome are attached.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+import importlib.metadata
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 try:
@@ -19,13 +20,40 @@ try:
 except ImportError:  # pragma: no cover - exercised by the no-otel test lane
     _OTEL_AVAILABLE = False
 
+try:
+    _LIBRARY_VERSION = importlib.metadata.version("dbkit")
+except importlib.metadata.PackageNotFoundError:  # pragma: no cover - unbuilt source checkout
+    _LIBRARY_VERSION = "0.0.0"
+
 
 class Tracer:
-    """Wraps an OpenTelemetry tracer; every method is a no-op if OTel isn't installed/enabled."""
+    """Wraps an OpenTelemetry tracer; every method is a no-op if OTel isn't installed/enabled.
 
-    def __init__(self, *, enabled: bool, service_name: str = "dbkit") -> None:
+    ``tracer_provider``/``schema_url``/``attributes`` are the same parameters
+    ``opentelemetry.trace.get_tracer`` itself accepts — pass a ``tracer_provider`` to bind to a
+    specific (non-global) provider, e.g. per-tenant tracing or test isolation.
+    """
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        tracer_provider: Any = None,
+        schema_url: str | None = None,
+        attributes: Mapping[str, Any] | None = None,
+    ) -> None:
         self._enabled = enabled and _OTEL_AVAILABLE
-        self._tracer = trace.get_tracer(service_name) if self._enabled else None
+        self._tracer = (
+            trace.get_tracer(
+                "dbkit",
+                _LIBRARY_VERSION,
+                tracer_provider=tracer_provider,
+                schema_url=schema_url,
+                attributes=attributes,
+            )
+            if self._enabled
+            else None
+        )
 
     @property
     def enabled(self) -> bool:
@@ -60,8 +88,11 @@ class Tracer:
             attributes["db.target.role"] = role
         # start_as_current_span records exceptions and sets ERROR status automatically when
         # the exception propagates out of this block (record_exception/set_status_on_exception
-        # default to True) — no manual handling needed here.
-        with self._tracer.start_as_current_span(name, attributes=attributes) as span:
+        # default to True) — no manual handling needed here. kind=CLIENT per the OTel semantic
+        # conventions for database client spans (the default is INTERNAL).
+        with self._tracer.start_as_current_span(
+            name, kind=trace.SpanKind.CLIENT, attributes=attributes
+        ) as span:
             yield SpanHandle(span)
 
 
@@ -76,5 +107,16 @@ class SpanHandle:
             self._span.set_attribute(key, value)
 
 
-def make_tracer(enabled: bool, service_name: str = "dbkit") -> Tracer:
-    return Tracer(enabled=enabled, service_name=service_name)
+def make_tracer(
+    enabled: bool,
+    *,
+    tracer_provider: Any = None,
+    schema_url: str | None = None,
+    attributes: Mapping[str, Any] | None = None,
+) -> Tracer:
+    return Tracer(
+        enabled=enabled,
+        tracer_provider=tracer_provider,
+        schema_url=schema_url,
+        attributes=attributes,
+    )

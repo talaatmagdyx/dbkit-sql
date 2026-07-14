@@ -32,7 +32,7 @@ psycopg = ["psycopg[binary]>=3.2"]
 asyncpg = ["asyncpg>=0.29"]
 yaml = ["pyyaml>=6.0"]
 prometheus = ["prometheus-client>=0.20"]
-otel = ["opentelemetry-api>=1.25"]
+otel = ["opentelemetry-api>=1.26"]  # >=1.26 for the synchronous Metrics Gauge instrument
 pydantic = ["pydantic>=2.7"]
 orjson = ["orjson>=3.10"]
 cli = ["typer>=0.12"]

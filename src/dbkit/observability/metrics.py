@@ -8,7 +8,7 @@ user/tenant/message/request ids, or exception strings.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 Labels = Mapping[str, str]
 
@@ -88,3 +88,11 @@ def try_prometheus_sink(namespace: str = "dbkit") -> MetricsSink:
     from .prometheus import PrometheusMetrics
 
     return PrometheusMetrics(namespace=namespace)
+
+
+def try_otel_metrics_sink(meter_name: str = "dbkit", meter_provider: Any = None) -> MetricsSink:
+    """Construct an OpenTelemetry Metrics-backed sink, or raise if ``opentelemetry-api`` is
+    missing. An alternative to :func:`try_prometheus_sink` — pick one per deployment."""
+    from .otel_metrics import OTelMetrics
+
+    return OTelMetrics(meter_name=meter_name, meter_provider=meter_provider)

@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — full OpenTelemetry options (traces, metrics, log correlation)
+- Tracing spans now carry `kind=SpanKind.CLIENT`, per the OTel semantic conventions for
+  database client operations (previously defaulted to `INTERNAL`).
+- `Tracer`/`make_tracer()` accept `tracer_provider`, `schema_url`, and `attributes` — the same
+  parameters `opentelemetry.trace.get_tracer()` itself takes — so an application can bind
+  dbkit's tracer to a specific (non-global) `TracerProvider`, e.g. for per-tenant tracing or
+  test isolation, instead of always using the global one. The tracer now identifies itself as
+  the `dbkit` instrumentation scope with its real package version, instead of the previous
+  `service_name` parameter (which conflated the instrumentation-scope name with the
+  application's own service name — that belongs in the app's `Resource`, not here).
+- Structured log events now carry `trace_id`/`span_id` from the currently active OTel span
+  (`observability/logging.py`), so a log line can be joined back to the trace that produced it.
+  Absent (no extra keys) when OTel isn't installed or no span is active — same
+  no-op-by-default posture as the rest of observability.
+- `observability.otel_metrics.OTelMetrics` / `try_otel_metrics_sink()`: a `MetricsSink`
+  implementation routing dbkit's counters/histograms/gauges through
+  `opentelemetry.metrics` instead of Prometheus — an alternative for deployments that export
+  metrics via OTLP rather than scraping. Requires `opentelemetry-api>=1.26` (for the
+  synchronous Metrics `Gauge` instrument).
+
 ### Changed — use SQLAlchemy's native mechanisms instead of reimplementing them
 - Cardinality enforcement (`fetch_one`/`fetch_optional`/`fetch_value`/`fetch_values`) now
   calls SQLAlchemy's own `Result.one()` / `.one_or_none()` / `.scalar_one()` /

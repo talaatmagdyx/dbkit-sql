@@ -17,9 +17,12 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
 - Engine registry, instrumented connection pooling, leak detection.
 - Explicit transactions, savepoints, commit-unknown detection, cancellation cleanup.
 - Health checks, graceful startup/shutdown.
-- Structured logging + metrics protocol (Prometheus adapter) + OpenTelemetry tracing
-  (`observability/tracing.py`, graceful no-op when OTel isn't installed/enabled; spans on
-  every read/write/transaction/stream/bulk-write/COPY, never carrying SQL text or params).
+- Structured logging + metrics protocol (Prometheus **or** OpenTelemetry Metrics adapter) +
+  OpenTelemetry tracing (`observability/tracing.py`, graceful no-op when OTel isn't
+  installed/enabled; `SpanKind.CLIENT` spans on every read/write/transaction/stream/bulk-write/
+  COPY, never carrying SQL text or params; injectable `tracer_provider` for per-tenant/test
+  isolation). Log events carry the active span's `trace_id`/`span_id` for trace/log
+  correlation.
 - Sync + async facades from one source (unasync generation).
 
 ## Phase 2 — Resilience ✅ (delivered)
