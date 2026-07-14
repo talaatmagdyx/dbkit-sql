@@ -44,8 +44,8 @@ The heuristic (`_core/idempotency_lint.py`) only recognizes a few explicit textu
 schema's unique constraints. If your `INSERT` is genuinely safe to run twice (e.g. a unique
 constraint on a natural key that would raise on the second attempt rather than duplicate data),
 the warning is a false positive and safe to ignore. If it's *not* actually safe, this is exactly
-the case the warning exists to catch — see §3 of `PRODUCTION_READINESS_REVIEW.md` for the
-duplicate-row failure mode this guards against.
+the case the warning exists to catch: retrying a non-idempotent `INSERT` after a transient
+failure (or a genuinely-unknown commit outcome) can silently duplicate the row.
 
 ## Pool exhaustion / requests hanging
 

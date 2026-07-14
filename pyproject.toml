@@ -8,14 +8,14 @@ version = "0.1.0"
 description = "A thin, high-throughput SQL toolkit over SQLAlchemy Core — sync and async, ORM-free."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "Apache-2.0"
+license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "dbkit contributors" }]
 keywords = ["sqlalchemy", "async", "postgresql", "database", "connection-pool", "sql"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

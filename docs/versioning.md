@@ -21,8 +21,7 @@ requires:
 
 ## What "stable 1.0" means for dbkit
 
-Before tagging `1.0.0`, the following must hold (tracked in
-`PRODUCTION_READINESS_REVIEW.md`'s "Recommended Changes Before Stable 1.0"):
+Before tagging `1.0.0`, the following must hold:
 
 - A real production track record — at least one non-trivial deployment running dbkit, not just
   test coverage (no amount of test coverage substitutes for production traffic surfacing

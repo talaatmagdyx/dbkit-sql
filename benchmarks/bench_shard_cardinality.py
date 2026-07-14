@@ -1,9 +1,8 @@
-"""High shard-cardinality load test — real concurrent traffic, not just a synthetic unit test
-(performance review §10, §15 test #15/#16). A single PostgreSQL instance stands in for physical
-shard topology here (the same pattern ``tests/integration/test_sharding_and_replicas.py`` uses)
-— the point is to prove dbkit's engine-registry/LRU-eviction behavior at high shard cardinality
-under real concurrent load, not to benchmark physical multi-node sharding infrastructure this
-session doesn't have.
+"""High shard-cardinality load test — real concurrent traffic, not just a synthetic unit test.
+A single PostgreSQL instance stands in for physical shard topology here (the same pattern
+``tests/integration/test_sharding_and_replicas.py`` uses) — the point is to prove dbkit's
+engine-registry/LRU-eviction behavior at high shard cardinality under real concurrent load, not
+to benchmark physical multi-node sharding infrastructure this session doesn't have.
 
 Two scenarios, discovered by running this benchmark and investigating an initial failure:
 
@@ -23,9 +22,9 @@ Two scenarios, discovered by running this benchmark and investigating an initial
   ``DatabaseConnectionError``, never a hang or an unclassified exception, and that the registry's
   own steady-state bound (``len(engines) <= max_engines``) still holds even while this happens.
 
-Operational takeaway (documented in PERFORMANCE_REVIEW.md): size ``max_engines`` to comfortably
-exceed expected *concurrent* distinct-shard fan-out, not just total shard cardinality — the two
-are independent axes and only the former determines connection-churn safety.
+Operational takeaway: size ``max_engines`` to comfortably exceed expected *concurrent*
+distinct-shard fan-out, not just total shard cardinality — the two are independent axes and
+only the former determines connection-churn safety.
 
     DBKIT_TEST_DSN=postgresql+psycopg://dbkit:dbkit@localhost:55432/dbkit \\
         uv run python -m benchmarks.bench_shard_cardinality
