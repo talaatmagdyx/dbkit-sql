@@ -152,50 +152,57 @@ class EngineRegistry:
         if entry is not None:
             entry.last_used = time.monotonic()
             return entry
+        victim: EngineEntry | None = None
         with self._lock:
             entry = self._entries.get(key_str)  # double-checked
-            if entry is not None:
-                entry.last_used = time.monotonic()
-                return entry
-            if self._max_engines is not None and len(self._entries) >= self._max_engines:
-                if not self._evict_lru:
-                    raise DatabaseConfigurationError(
-                        f"engine limit reached ({self._max_engines}); cannot create {key_str!r}"
-                    )
-                self._evict_lru_locked()
-            labels = {
-                "environment": key.environment,
-                "database": key.database,
-                "shard": key.shard_id,
-                "role": key.role,
-            }
-            engine = self._build_engine(target)
-            pool = target.resolved_pool(self._config.defaults)
-            instrumentation = PoolInstrumentation(
-                key=key_str,
-                labels=labels,
-                long_hold_warning_seconds=pool.long_hold_warning_seconds,
-                metrics=self._metrics,
-            )
-            instrumentation.attach(sync_engine_of(engine))
-            entry = EngineEntry(
-                key=key,
-                engine=engine,
-                target=target,
-                instrumentation=instrumentation,
-                labels=labels,
-            )
-            self._entries[key_str] = entry
-            return entry
+            if entry is None:
+                if self._max_engines is not None and len(self._entries) >= self._max_engines:
+                    if not self._evict_lru:
+                        raise DatabaseConfigurationError(
+                            f"engine limit reached ({self._max_engines}); cannot create {key_str!r}"
+                        )
+                    # Pop the victim under the lock, but dispose it *after* releasing the lock
+                    # (below) — disposing while holding the lock would block every concurrent
+                    # get() that only misses the fast path on I/O it has nothing to do with
+                    # (performance review §2 Finding #4).
+                    victim = self._pop_lru_locked()
+                labels = {
+                    "environment": key.environment,
+                    "database": key.database,
+                    "shard": key.shard_id,
+                    "role": key.role,
+                }
+                engine = self._build_engine(target)
+                pool = target.resolved_pool(self._config.defaults)
+                instrumentation = PoolInstrumentation(
+                    key=key_str,
+                    labels=labels,
+                    long_hold_warning_seconds=pool.long_hold_warning_seconds,
+                    metrics=self._metrics,
+                )
+                instrumentation.attach(sync_engine_of(engine))
+                entry = EngineEntry(
+                    key=key,
+                    engine=engine,
+                    target=target,
+                    instrumentation=instrumentation,
+                    labels=labels,
+                )
+                self._entries[key_str] = entry
+            entry.last_used = time.monotonic()
+        if victim is not None:
+            victim.engine.dispose()
+            self._metrics.incr(m.CONN_CLOSED, labels=victim.labels)
+        return entry
 
-    def _evict_lru_locked(self) -> None:
-        """Dispose the least-recently-used engine. Caller must hold ``self._lock``."""
+    def _pop_lru_locked(self) -> EngineEntry | None:
+        """Pop (but don't dispose) the least-recently-used engine. Caller must hold
+        ``self._lock``; the caller is responsible for disposing the popped engine after
+        releasing the lock."""
         if not self._entries:
-            return
+            return None
         oldest_key = min(self._entries, key=lambda k: self._entries[k].last_used)
-        victim = self._entries.pop(oldest_key)
-        victim.engine.dispose()
-        self._metrics.incr(m.CONN_CLOSED, labels=victim.labels)
+        return self._entries.pop(oldest_key)
 
     def snapshots(self) -> list[PoolSnapshot]:
         """A pool snapshot for every currently live engine."""
@@ -215,7 +222,7 @@ class EngineRegistry:
         with fresh connections. Returns ``False`` if no live engine has that key.
 
         Only closes idle pooled connections, exactly like the LRU-eviction path
-        (:meth:`_evict_lru_locked`) — a connection already checked out by another in-flight
+        (:meth:`_pop_lru_locked`) — a connection already checked out by another in-flight
         coroutine keeps working until the caller releases it (verified by the same regression
         test covering LRU eviction under concurrent use).
         """

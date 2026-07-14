@@ -110,6 +110,9 @@ class RetryConfig:
     maximum_delay_ms: float = 250.0
     multiplier: float = 2.0
     jitter: str = "full"  # "full" | "none"
+    #: Hard ceiling on total time spent retrying (backoff delays, not attempt execution time),
+    #: enforced by ``run_with_retries`` independent of ``attempts``/the caller's own ``deadline``
+    #: — a call raises once this budget is exhausted even if attempts remain.
     maximum_total_ms: float = 750.0
     retry_reads: bool = True
     retry_writes: bool = False
@@ -130,6 +133,10 @@ class ConcurrencyConfig:
     reads: int | None = None
     writes: int | None = None
     bulk_writes: int | None = None
+    #: A separate cap for queries explicitly marked ``Query(expensive=True)`` — acquired *in
+    #: addition to* the reads/writes tier, not instead of it, so a small number of known-heavy
+    #: queries (a big aggregation, an ad-hoc report) can be bounded independently of ordinary
+    #: traffic without needing their own database/shard/role target.
     expensive_queries: int | None = None
 
 

@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — deep performance review fixes
+- **`benchmarks/bench_unnest.py`** (new): the `unnest()` bulk-insert strategy previously had no
+  committed benchmark at all backing its documented "~32× faster than `execute_many`" claim.
+  Running this new benchmark repeatedly against live PostgreSQL shows ~29× in steady state at
+  20,000 rows (a first/cold run measured closer to ~20× — real run-to-run variance, now stated
+  honestly instead of a single point estimate). Registered in `python -m benchmarks --only
+  unnest`.
+- Fixed a genuine gap in the `unasync` code generator surfaced while building the above: the
+  `TOKENS` table had no mapping for `contextlib.AsyncExitStack`/`enter_async_context` — any new
+  async code using it would silently generate broken sync code (`'AsyncExitStack' object does
+  not support the context manager protocol`), only caught because the sync integration suite
+  actually ran against a live database. Added the missing token mapping and extended
+  `tests/unit/test_unasync_translation.py`'s fixture to cover this construct going forward.
+
 ### Added — closing every remaining production-readiness review finding
 - **`dbkit metrics`** (new CLI command, requires the `prometheus` extra): runs one health probe
   and prints the resulting metric values in Prometheus text format. Documented as a wiring
@@ -185,8 +199,11 @@ All notable changes to this project are documented here. The format is based on
 ### Added — unnest() bulk strategy, psycopg pipeline mode, PgBouncer-compatible mode
 - `strategy="unnest"` on `insert_many`/`upsert_many` (`postgres/unnest.py`): one array-per-
   column bind instead of one bind per column per row, so batch size isn't limited by
-  PostgreSQL's 65535 bind-parameter ceiling — ~32× faster than `execute_many` at 20k rows
-  in-benchmark. Each column is cast with `CAST(:name AS type[])` — SQLAlchemy's `text()`
+  PostgreSQL's 65535 bind-parameter ceiling — ~~~32× faster than `execute_many` at 20k rows
+  in-benchmark~~ **correction (see "Unreleased" above): this figure had no committed benchmark
+  behind it at all; `benchmarks/bench_unnest.py` now measures it for real — ~29× in steady
+  state across repeated runs at 20,000 rows (a first/cold run measured closer to ~20×).** Each
+  column is cast with `CAST(:name AS type[])` — SQLAlchemy's `text()`
   silently leaves `:name::type` unparsed as a bindparam, so the `::` shorthand can't be used.
   Works with `atomic`/`best_effort`/`split_on_failure` modes and `ON CONFLICT` upserts.
 - `tx.pipeline()` (`postgres/pipeline.py`): psycopg pipeline mode as a raw-driver escape

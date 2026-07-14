@@ -27,7 +27,7 @@ from .._core.errors import (
 from ..observability import logging as obslog
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink, NoopMetrics
-from ._compat import cancellation_shield, is_cancellation
+from ._compat import is_cancellation, shield_from_cancellation
 from .connection import ConnectionScope, apply_statement_timeout_sql
 
 
@@ -233,13 +233,16 @@ class _TransactionManager:
     def _rollback(self, *, cancelled: bool) -> None:
         if self._trans is None:
             return
-        with cancellation_shield():
+
+        def _do_rollback() -> None:
             try:
                 self._trans.rollback()
             except Exception:
                 # Rollback failed — the connection state is uncertain; invalidate it.
                 with contextlib.suppress(Exception):
                     self._conn.invalidate()  # type: ignore[union-attr]
+
+        shield_from_cancellation(_do_rollback())
         if cancelled:
             # State after cancellation is uncertain; drop the connection from the pool.
             with contextlib.suppress(Exception):
@@ -248,9 +251,12 @@ class _TransactionManager:
     def _release(self) -> None:
         if self._conn is None:
             return
-        with cancellation_shield():
+
+        def _do_release() -> None:
             with contextlib.suppress(Exception):
-                self._conn.close()
+                self._conn.close()  # type: ignore[union-attr]
+
+        shield_from_cancellation(_do_release())
         self._conn = None
         self._trans = None
 

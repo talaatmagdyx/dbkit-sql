@@ -101,6 +101,55 @@ async def test_write_not_retried_by_default() -> None:
     assert calls == 1
 
 
+async def test_maximum_total_ms_bounds_total_retry_time_regardless_of_attempts_remaining() -> None:
+    """§7 performance-review finding: ``maximum_total_ms`` must be a real ceiling on total time
+    spent retrying, not a dead config field — even when ``attempts`` and ``deadline`` would
+    otherwise allow more retries."""
+    calls = 0
+
+    async def op() -> str:
+        nonlocal calls
+        calls += 1
+        raise DatabaseSerializationError("conflict")
+
+    retry = RetryConfig(
+        attempts=1000,  # effectively unbounded by attempt count alone
+        initial_delay_ms=10,
+        maximum_delay_ms=10,
+        jitter="none",
+        maximum_total_ms=25,  # budget exhausts after ~2-3 attempts at a 10ms backoff
+    )
+    with pytest.raises(DatabaseSerializationError):
+        await run_with_retries(
+            op, query=READ, retry=retry, breaker=None, metrics=NoopMetrics(), labels=LABELS
+        )
+    # far fewer than 1000 attempts — the budget cut it short, not the attempt count
+    assert 1 < calls < 10
+
+
+async def test_maximum_total_ms_does_not_cut_short_a_call_that_finishes_within_budget() -> None:
+    calls = 0
+
+    async def op() -> str:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise DatabaseSerializationError("conflict")
+        return "ok"
+
+    retry = RetryConfig(
+        attempts=5,
+        initial_delay_ms=1,
+        maximum_delay_ms=2,
+        maximum_total_ms=750,  # default — plenty of headroom for 2 tiny retries
+    )
+    result = await run_with_retries(
+        op, query=READ, retry=retry, breaker=None, metrics=NoopMetrics(), labels=LABELS
+    )
+    assert result == "ok"
+    assert calls == 3
+
+
 async def test_breaker_opens_and_blocks() -> None:
     breaker = CircuitBreaker(failure_threshold=3, window_seconds=100, open_seconds=100)
 

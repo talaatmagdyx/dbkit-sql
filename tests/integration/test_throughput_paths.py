@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 
 import pytest
@@ -73,6 +74,48 @@ async def test_insert_many_atomic(db: AsyncDatabase) -> None:
     assert count == 3000
 
 
+async def test_insert_many_shrinks_batch_for_wide_rows_when_max_payload_bytes_set(
+    base_config: dict,
+) -> None:
+    """Performance review §9 Finding: ``max_payload_bytes`` was declared on ``BulkConfig`` but
+    never read by ``resolve_batch_rows`` — a batch of many wide rows had no actual byte-size
+    ceiling. Verified against a real database, not just the pure-function unit tests."""
+    from ..conftest import RecordingMetrics
+
+    metrics = RecordingMetrics()
+    cfg = {
+        **base_config,
+        "defaults": {
+            **base_config["defaults"],
+            "bulk": {
+                "default_batch_rows": 1000,
+                "max_batch_rows": 1000,
+                "max_payload_bytes": 10_000,
+            },
+        },
+    }
+    wide_db = AsyncDatabase.from_config(cfg, metrics=metrics)
+    await wide_db.start()
+    try:
+        await wide_db.execute(
+            sql("CREATE TABLE IF NOT EXISTS dbkit_p3_bulk (id int primary key, v text)"),
+            target=TARGET,
+        )
+        await wide_db.execute(sql("TRUNCATE dbkit_p3_bulk"), target=TARGET)
+        wide_rows = [{"id": i, "v": "x" * 1000} for i in range(50)]  # ~1KB/row
+        result = await wide_db.insert_many(BULK, wide_rows, target=TARGET)
+        assert result.row_count == 50
+
+        from dbkit.observability.metrics import BULK_BATCH_SIZE
+
+        batch_sizes = [v for n, v, _ in metrics.observe_calls if n == BULK_BATCH_SIZE]
+        assert batch_sizes
+        # 10,000-byte budget / ~1,000 bytes per row -> well below the 1000-row max_batch_rows
+        assert max(batch_sizes) <= 15
+    finally:
+        await wide_db.close()
+
+
 async def test_insert_many_atomic_rolls_back_on_error(db: AsyncDatabase) -> None:
     from dbkit.errors import DatabaseUniqueViolationError
 
@@ -92,6 +135,52 @@ async def test_insert_many_split_on_failure_isolates_bad_rows(db: AsyncDatabase)
     )
     assert result.row_count == 100
     assert await db.fetch_value(sql("SELECT count(*) FROM dbkit_p3_bulk"), target=READ) == 100
+
+
+async def test_best_effort_mode_logs_and_counts_a_dropped_batch(
+    base_config: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Performance review §9: best_effort previously dropped a failed batch with a bare
+    ``continue`` -- completely silent. Verify the new log line + metric fire, against a real
+    database, not just a mocked failure."""
+    from ..conftest import RecordingMetrics
+
+    metrics = RecordingMetrics()
+    db = AsyncDatabase.from_config(base_config, metrics=metrics)
+    await db.start()
+    try:
+        await db.execute(
+            sql("CREATE TABLE IF NOT EXISTS dbkit_p3_bulk (id int primary key, v text)"),
+            target=TARGET,
+        )
+        await db.execute(sql("TRUNCATE dbkit_p3_bulk"), target=TARGET)
+        # batch_size=200 keeps all 10 rows + the duplicate in ONE batch -- best_effort commits
+        # per batch, so the duplicate key fails (and drops) the *whole* batch, not just itself.
+        rows = [{"id": i, "v": "x"} for i in range(10)] + [{"id": 5, "v": "dup"}]
+        with caplog.at_level(logging.WARNING, logger="dbkit"):
+            result = await db.insert_many(
+                BULK, rows, target=TARGET, mode="best_effort", batch_size=200
+            )
+        assert result.row_count == 0  # the whole batch was dropped, nothing committed
+
+        dropped_logs = [
+            r for r in caplog.records if r.dbkit["event"] == "database.bulk.rows_dropped"
+        ]
+        assert len(dropped_logs) == 1
+        assert dropped_logs[0].dbkit["mode"] == "best_effort"
+        assert dropped_logs[0].dbkit["rows_dropped"] == 11
+        assert dropped_logs[0].dbkit["error_category"] == "integrity"
+
+        dropped_metric = [
+            (v, labels) for n, v, labels in metrics.incr_calls if n == "db_bulk_rows_dropped_total"
+        ]
+        assert dropped_metric == [
+            (11, {"database": "app", "query_name": "dbkit_p3_bulk.insert_many"})
+        ]
+
+        assert await db.fetch_value(sql("SELECT count(*) FROM dbkit_p3_bulk"), target=READ) == 0
+    finally:
+        await db.close()
 
 
 async def test_upsert_many_updates_on_conflict(db: AsyncDatabase) -> None:

@@ -669,7 +669,10 @@ class Database:
         batch_rows = bulk_mod.resolve_batch_rows(
             len(columns),
             batch_size or bulk_cfg.default_batch_rows,
-            bulk_mod.BulkLimits(max_rows=bulk_cfg.max_batch_rows),
+            bulk_mod.BulkLimits(
+                max_rows=bulk_cfg.max_batch_rows, max_payload_bytes=bulk_cfg.max_payload_bytes
+            ),
+            sample_row=rows[0] if rows else None,
         )
         batches = list(bulk_mod.iter_batches(list(rows), batch_rows))
         self._metrics.observe(m.BULK_BATCH_SIZE, batch_rows, labels=labels)
@@ -755,8 +758,23 @@ class Database:
                     written += (
                         cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(batch)
                     )
-            except Exception:
+            except Exception as exc:
                 if mode != "split_on_failure":
+                    # best_effort: this whole batch is dropped, never retried -- the only
+                    # signal a caller gets is this log line + metric (performance review §9).
+                    category = classify(exc, query_name=query_name).category.value
+                    obslog.bulk_batch_dropped_warning(
+                        query_name=query_name,
+                        database=entry.key.database,
+                        mode=mode,
+                        rows_dropped=len(batch),
+                        error_category=category,
+                    )
+                    self._metrics.incr(
+                        m.BULK_ROWS_DROPPED,
+                        len(batch),
+                        labels={"database": entry.key.database, "query_name": query_name},
+                    )
                     continue
                 for row in batch:
                     try:
@@ -772,7 +790,22 @@ class Database:
                                 is_postgres=self._executor.is_postgres(entry),
                             )
                             written += 1
-                    except Exception:
+                    except Exception as row_exc:
+                        # split_on_failure: this one row is dropped after its batch already
+                        # failed -- same silent-loss risk, narrowed to a single row.
+                        category = classify(row_exc, query_name=query_name).category.value
+                        obslog.bulk_batch_dropped_warning(
+                            query_name=query_name,
+                            database=entry.key.database,
+                            mode=mode,
+                            rows_dropped=1,
+                            error_category=category,
+                        )
+                        self._metrics.incr(
+                            m.BULK_ROWS_DROPPED,
+                            1,
+                            labels={"database": entry.key.database, "query_name": query_name},
+                        )
                         continue
         return written
 

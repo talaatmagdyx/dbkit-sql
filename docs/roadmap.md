@@ -71,9 +71,14 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
   redelivery count if you need that.
 - `unnest()` bulk strategy (`postgres/unnest.py`, `strategy="unnest"` on `insert_many`/
   `upsert_many`): one array-per-column bind instead of one bind per column per row, so batch
-  size isn't limited by the 65535 bind-parameter ceiling — ~32× faster than `execute_many` at
-  20k rows in-benchmark. PostgreSQL only; each column cast with `CAST(:name AS type[])`
-  (`:name::type[]` is silently left unparsed by SQLAlchemy's `text()`).
+  size isn't limited by the 65535 bind-parameter ceiling — measured by the new
+  `benchmarks/bench_unnest.py` at ~29× faster than `execute_many` at 20,000 rows in steady state
+  across repeated runs (a first run against a cold table/connection measured closer to ~20×;
+  real run-to-run variance, not a single point estimate — see `docs/testing.md`). A prior "~32×"
+  figure cited here had no committed benchmark backing it at all (performance review §9/§14);
+  this replaces it with a reproducible, repeatedly-measured number against live PostgreSQL.
+  PostgreSQL only; each column cast with `CAST(:name AS type[])` (`:name::type[]` is silently
+  left unparsed by SQLAlchemy's `text()`).
 - psycopg pipeline mode (`postgres/pipeline.py`, `tx.pipeline()`): batches dependent statements
   into one round trip without waiting for each response — mirrors the COPY escape-hatch
   pattern (raw driver connection via `get_raw_connection()`/`driver_connection`). The benefit

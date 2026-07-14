@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import random as _random
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
@@ -91,12 +92,21 @@ class HashShardResolver:
     shards across restarts or app instances. Write routing must be deterministic (§22.3).
     """
 
+    #: Bounded per-instance cache of ``shard_key -> resolved bucket name``. The result is a
+    #: pure function of ``(shard_key, num_shards, prefix)``, all fixed once the resolver is
+    #: constructed, so caching is safe — bounded (not a plain unbounded dict) because a
+    #: high-cardinality key space (e.g. one key per request) must not grow this without limit,
+    #: the same concern the engine registry's own ``max_engines``/``evict_lru`` addresses
+    #: (performance review §10 Finding: SHA-256 was recomputed fresh on every call).
+    _CACHE_SIZE = 4096
+
     def __init__(self, num_shards: int, *, prefix: str = "shard") -> None:
         """``num_shards`` fixed buckets, named ``{prefix}-000``, ``{prefix}-001``, etc."""
         if num_shards < 1:
             raise DatabaseConfigurationError("num_shards must be >= 1")
         self.num_shards = num_shards
         self.prefix = prefix
+        self._cache: OrderedDict[object, str] = OrderedDict()
 
     def resolve(self, database: str, shard_key: object) -> str:
         """Hash ``shard_key`` (via SHA-256) into one of ``num_shards`` buckets."""
@@ -104,9 +114,17 @@ class HashShardResolver:
             raise DatabaseRoutingError(
                 f"hash sharding requires a shard_key for database {database!r}"
             )
+        cached = self._cache.get(shard_key)
+        if cached is not None:
+            self._cache.move_to_end(shard_key)
+            return cached
         digest = hashlib.sha256(str(shard_key).encode("utf-8")).digest()
         bucket = int.from_bytes(digest[:8], "big") % self.num_shards
-        return f"{self.prefix}-{bucket:03d}"
+        result = f"{self.prefix}-{bucket:03d}"
+        self._cache[shard_key] = result
+        if len(self._cache) > self._CACHE_SIZE:
+            self._cache.popitem(last=False)
+        return result
 
 
 @dataclass(frozen=True, slots=True)

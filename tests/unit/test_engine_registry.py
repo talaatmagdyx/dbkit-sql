@@ -104,6 +104,58 @@ async def test_evict_lru_disposes_oldest_engine_instead_of_failing() -> None:
     await reg.dispose_all()
 
 
+async def test_lru_eviction_does_not_block_concurrent_lookups_during_dispose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Performance review §2 Finding #4: disposing the evicted engine must happen *after*
+    releasing the registry lock, so a concurrent get() for an unrelated key isn't serialized
+    behind dispose I/O it has nothing to do with. Under the old (buggy) implementation, this
+    test would time out — dispose ran while the lock was still held."""
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    cfg = DbkitConfig.from_dict(
+        {
+            "databases": {
+                "a": {"primary": {"url": "postgresql+psycopg://h/a"}},
+                "b": {"primary": {"url": "postgresql+psycopg://h/b"}},
+                "c": {"primary": {"url": "postgresql+psycopg://h/c"}},
+            }
+        }
+    )
+    reg = AsyncEngineRegistry(cfg, max_engines=1, evict_lru=True)
+    route_a = ResolvedRoute(database="a", shard_id="default", role="primary")
+    route_b = ResolvedRoute(database="b", shard_id="default", role="primary")
+    route_c = ResolvedRoute(database="c", shard_id="default", role="primary")
+
+    entry_a = await reg.get(route_a)
+
+    dispose_started = asyncio.Event()
+    release_dispose = asyncio.Event()
+    original_dispose = AsyncEngine.dispose
+
+    async def patched_dispose(engine_self: AsyncEngine) -> None:
+        if engine_self is entry_a.engine:
+            dispose_started.set()
+            await release_dispose.wait()
+            return
+        await original_dispose(engine_self)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", patched_dispose)
+
+    # Requesting 'b' exceeds max_engines=1 and evicts 'a' -- the slow dispose above runs in the
+    # background once the lock protecting the swap is released.
+    evict_task = asyncio.create_task(reg.get(route_b))
+    await asyncio.wait_for(dispose_started.wait(), timeout=1.0)
+
+    # A brand-new get() for a different key, issued *while 'a' is still slowly disposing*, must
+    # not be blocked by it.
+    await asyncio.wait_for(reg.get(route_c), timeout=1.0)
+
+    release_dispose.set()
+    await evict_task
+    await reg.dispose_all()
+
+
 async def test_evict_lru_disabled_by_default() -> None:
     """The default (evict_lru=False) keeps the strict hard-cap behavior."""
     cfg = DbkitConfig.from_dict(

@@ -28,16 +28,23 @@ class PrometheusMetrics:
         self._registry = registry if registry is not None else REGISTRY
         self._namespace = namespace
         self._labelnames = sorted(ALLOWED_LABELS)
+        #: Prometheus requires every declared label name to be present in each ``.labels()``
+        #: call, so ``_fill()`` can never return fewer than all of them — but rebuilding that
+        #: full set from scratch via a per-key ``.get()`` on every single metric emission is
+        #: avoidable. This template is built once and merged (a cheap dict-merge) rather than
+        #: reconstructed key-by-key per call (performance review §4/§11 Finding #5).
+        self._empty_labels: dict[str, str] = dict.fromkeys(self._labelnames, "")
         self._counters: dict[str, Any] = {}
         self._gauges: dict[str, Any] = {}
         self._histograms: dict[str, Any] = {}
 
     def _fill(self, labels: Labels | None) -> dict[str, str]:
-        provided = labels or {}
-        bad = set(provided) - ALLOWED_LABELS
+        if not labels:
+            return dict(self._empty_labels)
+        bad = set(labels) - ALLOWED_LABELS
         if bad:
             raise ValueError(f"disallowed metric labels: {sorted(bad)}")
-        return {name: str(provided.get(name, "")) for name in self._labelnames}
+        return {**self._empty_labels, **{k: str(v) for k, v in labels.items()}}
 
     def _counter(self, name: str) -> Any:
         if name not in self._counters:

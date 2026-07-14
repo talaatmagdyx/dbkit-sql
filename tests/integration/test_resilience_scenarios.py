@@ -122,6 +122,76 @@ async def test_connection_count_stays_bounded_under_concurrency(base_config: dic
         await db.close()
 
 
+async def test_client_side_timeout_actually_cancels_the_server_side_statement(
+    base_config: dict,
+) -> None:
+    """A client-side ``timeout=`` on an async call must not just abandon the connection while
+    the backend keeps executing — the driver must send a real PostgreSQL cancel request, or a
+    client timeout under saturation (a query stuck behind a lock) would let the abandoned query
+    keep consuming a backend process/locks after the caller already reports failure, worsening
+    exactly the saturation the timeout exists to bound (performance review §3/§13).
+
+    Verified empirically via ``pg_stat_activity``, not assumed: both psycopg3
+    (``AsyncConnection.wait()``) and asyncpg (``Connection._cancel_current_command``) send a
+    real cancel request when an ``asyncio.CancelledError`` interrupts an in-flight query wait —
+    which is exactly what dbkit's ``asyncio.timeout()``-based client deadline triggers. This test
+    locks that behavior in as a permanent regression check using a raw psycopg admin connection
+    to hold a row lock and inspect server state, independent of which driver dbkit itself is
+    configured to use for the timed-out call.
+    """
+    from urllib.parse import urlsplit
+
+    import psycopg
+
+    dsn = base_config["databases"]["app"]["primary"]["url"]
+    parsed = urlsplit(dsn)
+    raw_dsn = f"{parsed.scheme.split('+', 1)[0]}://{parsed.netloc}{parsed.path}"
+
+    holder = await psycopg.AsyncConnection.connect(raw_dsn, autocommit=False)
+    admin = await psycopg.AsyncConnection.connect(raw_dsn, autocommit=True)
+    try:
+        async with holder.cursor() as cur:
+            await cur.execute(
+                "CREATE TABLE IF NOT EXISTS dbkit_timeout_probe (id int PRIMARY KEY, v int)"
+            )
+            await cur.execute(
+                "INSERT INTO dbkit_timeout_probe (id, v) VALUES (1, 1) ON CONFLICT (id) DO NOTHING"
+            )
+            await holder.commit()
+            await cur.execute("BEGIN")
+            await cur.execute("SELECT v FROM dbkit_timeout_probe WHERE id = 1 FOR UPDATE")
+
+        db = await _make_db(dsn)
+        try:
+            with pytest.raises(DatabaseError):
+                await db.execute(
+                    sql("UPDATE dbkit_timeout_probe SET v = 2 WHERE id = 1"),
+                    target=TARGET,
+                    timeout=0.5,
+                )
+        finally:
+            await db.close()
+
+        # The abandoned UPDATE's backend must be gone (cancelled), not still waiting on the
+        # lock — a lingering blocked backend here would mean the driver only abandoned the
+        # client-side wait without telling the server to stop.
+        async with admin.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE query ILIKE '%dbkit_timeout_probe%' AND state != 'idle in transaction' "
+                "AND pid != pg_backend_pid()"
+            )
+            (still_running,) = await cur.fetchone()
+        assert still_running == 0, (
+            "the timed-out UPDATE's backend is still active/waiting after the client gave up — "
+            "the driver abandoned the client-side wait without cancelling server-side"
+        )
+    finally:
+        await holder.rollback()
+        await holder.close()
+        await admin.close()
+
+
 async def test_cancellation_storm_leaves_no_checked_out_connections(
     chaos_db: AsyncDatabase,
 ) -> None:

@@ -14,6 +14,7 @@ from dbkit import AsyncDatabase, DatabaseTarget, Query, sql
 from dbkit.errors import (
     DatabaseCommitUnknownError,
     DatabaseError,
+    DatabaseOverloadedError,
     DatabasePoolTimeoutError,
     DatabaseQueryTimeoutError,
     DatabaseResultError,
@@ -77,6 +78,107 @@ async def test_fetch_optional_and_value(adb: AsyncDatabase) -> None:
     assert await adb.fetch_optional(GET, {"id": 999}, target=TARGET) is None
     val = await adb.fetch_value(sql("SELECT abs(:n)"), {"n": -7}, target=TARGET)
     assert val == 7
+
+
+async def test_one_shot_calls_resolve_entry_and_labels_exactly_once_each(
+    adb: AsyncDatabase,
+) -> None:
+    """Performance review §4/§11 Finding #5: ``execute_with_resilience`` and ``scope()`` used to
+    each independently resolve the engine entry and rebuild an identical labels dict — meaning a
+    single ``fetch_value`` call touched both twice. ``scope()`` now accepts the already-resolved
+    ``entry``/``labels`` from ``execute_with_resilience`` instead of recomputing them."""
+    executor = adb._executor
+    entry_calls = 0
+    labels_calls = 0
+    original_entry = executor.entry
+    original_labels = executor.labels
+
+    async def counting_entry(target):
+        nonlocal entry_calls
+        entry_calls += 1
+        return await original_entry(target)
+
+    def counting_labels(entry, query_name, operation):
+        nonlocal labels_calls
+        labels_calls += 1
+        return original_labels(entry, query_name, operation)
+
+    with (
+        patch.object(executor, "entry", side_effect=counting_entry),
+        patch.object(executor, "labels", side_effect=counting_labels),
+    ):
+        val = await adb.fetch_value(sql("SELECT 1"), target=TARGET)
+
+    assert val == 1
+    assert entry_calls == 1
+    assert labels_calls == 1
+
+
+async def test_expensive_query_tier_bounds_concurrency_independently_of_writes_tier(
+    base_config: dict,
+) -> None:
+    """Performance review §5 Finding #9: ``ConcurrencyConfig.expensive_queries`` was declared
+    but never wired into a real semaphore. ``Query(expensive=True)`` now acquires a separate
+    tier *in addition to* the normal reads/writes tier, so a small number of known-heavy
+    queries can be bounded independently of ordinary traffic."""
+    cfg = {
+        **base_config,
+        "databases": {
+            "app": {**base_config["databases"]["app"], "concurrency": {"expensive_queries": 1}}
+        },
+    }
+    db = AsyncDatabase.from_config(cfg)
+    await db.start()
+    try:
+        heavy = Query(
+            name="expensive.sleep",
+            statement=sql("SELECT pg_sleep(0.3)"),
+            operation="read",
+            expensive=True,
+        )
+        light = Query(
+            name="expensive.probe", statement=sql("SELECT 1"), operation="read", expensive=True
+        )
+
+        # Saturate the single expensive-tier slot with a slow query...
+        task = asyncio.create_task(db.fetch_value(heavy, target=TARGET))
+        await asyncio.sleep(0.05)
+        # ...a second expensive query is bounded by the *same* tier and times out quickly,
+        # even though the ordinary "reads" tier is nowhere near saturated.
+        with pytest.raises(DatabaseOverloadedError, match="expensive"):
+            await db.fetch_value(light, target=TARGET, timeout=0.1)
+        await task  # let the first one finish cleanly
+    finally:
+        await db.close()
+
+
+async def test_non_expensive_query_is_unaffected_by_the_expensive_tier(
+    base_config: dict,
+) -> None:
+    """A query not marked ``expensive=True`` must never touch the expensive tier at all — it
+    should proceed normally even while that tier is fully saturated."""
+    cfg = {
+        **base_config,
+        "databases": {
+            "app": {**base_config["databases"]["app"], "concurrency": {"expensive_queries": 1}}
+        },
+    }
+    db = AsyncDatabase.from_config(cfg)
+    await db.start()
+    try:
+        heavy = Query(
+            name="expensive.sleep2",
+            statement=sql("SELECT pg_sleep(0.3)"),
+            operation="read",
+            expensive=True,
+        )
+        task = asyncio.create_task(db.fetch_value(heavy, target=TARGET))
+        await asyncio.sleep(0.05)
+        # ordinary query, not marked expensive -- unaffected by the saturated expensive tier
+        assert await db.fetch_value(sql("SELECT 1"), target=TARGET, timeout=1.0) == 1
+        await task
+    finally:
+        await db.close()
 
 
 async def test_custom_function_via_text(adb: AsyncDatabase) -> None:

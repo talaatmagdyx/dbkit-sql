@@ -56,6 +56,8 @@ TOKENS: dict[str, str] = {
     "AsyncEngine": "Engine",
     # contextlib async forms
     "AbstractAsyncContextManager": "AbstractContextManager",
+    "AsyncExitStack": "ExitStack",
+    "enter_async_context": "enter_context",
     # concurrency primitives
     "asyncio.BoundedSemaphore": "threading.BoundedSemaphore",
     "asyncio.Semaphore": "threading.Semaphore",

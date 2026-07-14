@@ -2,7 +2,7 @@
 
 python -m benchmarks                          # all suites, testcontainers PostgreSQL
 python -m benchmarks --dsn postgresql+psycopg://localhost/postgres
-python -m benchmarks --only crud              # one suite (overhead/throughput/latency/batch/crud)
+python -m benchmarks --only crud              # one suite (see SUITES below for all names)
 python -m benchmarks --no-save
 """
 
@@ -18,7 +18,10 @@ from . import (
     bench_crud,
     bench_latency,
     bench_overhead,
+    bench_pgbouncer_compatible,
+    bench_pool_exhaustion,
     bench_throughput,
+    bench_unnest,
 )
 
 SUITES = {
@@ -27,6 +30,9 @@ SUITES = {
     "latency": bench_latency,
     "batch": bench_batch,
     "crud": bench_crud,
+    "unnest": bench_unnest,
+    "pool_exhaustion": bench_pool_exhaustion,
+    "pgbouncer_compatible": bench_pgbouncer_compatible,
 }
 
 

@@ -74,6 +74,9 @@ STREAM_ROWS = "db_stream_rows_total"
 STREAM_BYTES = "db_stream_bytes_total"
 BULK_ROWS = "db_bulk_rows_total"
 BULK_BATCH_SIZE = "db_bulk_batch_size"
+#: Rows silently dropped by a best_effort/split_on_failure bulk write (never retried) — the
+#: only metric signal for otherwise-silent data loss under those failure modes (§19.3).
+BULK_ROWS_DROPPED = "db_bulk_rows_dropped_total"
 
 #: Labels dbkit is allowed to attach (§25.1). Adapters should reject anything outside this set.
 ALLOWED_LABELS = frozenset(

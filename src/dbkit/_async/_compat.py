@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 IS_ASYNC = True
 
 #: Metric/label value distinguishing this frontend (§25.1).
 API_LABEL = "async"
+
+T = TypeVar("T")
 
 
 def sync_engine_of(engine: Any) -> Any:
@@ -87,10 +89,23 @@ def is_cancellation(exc: BaseException) -> bool:
     return isinstance(exc, asyncio.CancelledError)
 
 
-@contextlib.asynccontextmanager
-async def cancellation_shield() -> AsyncIterator[None]:
-    """Best-effort protection of a short cleanup (rollback/return-to-pool) from cancellation."""
+async def shield_from_cancellation(coro: Coroutine[Any, Any, T]) -> T:
+    """Run ``coro`` (a short cleanup: rollback/return-to-pool) to completion even if the
+    current task is cancelled again while it's in progress (§12.3).
+
+    A plain ``try/except CancelledError`` around an ``await`` in the *same* task cannot prevent
+    that await from being interrupted — it can only react after the fact. Genuine shielding
+    requires the protected work to run as a separate task: ``asyncio.shield()`` protects that
+    inner task from a cancellation delivered to the *outer* one. If the caller's task is
+    cancelled while waiting here, the cancellation is deferred until the shielded cleanup has
+    actually finished running (not swallowed — the cancellation is still re-raised once cleanup
+    completes), so a caller can rely on rollback/release never being left half-done.
+    """
+    task = asyncio.ensure_future(coro)
     try:
-        yield
-    finally:
-        pass
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if not task.done():
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.shield(task)
+        raise
