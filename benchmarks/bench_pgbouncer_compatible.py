@@ -101,6 +101,18 @@ def main(dsn: str | None = None) -> dict[str, dict[str, float]]:
         return results
 
 
+def run_all(dsn: str) -> dict[str, float]:
+    """SUITES adapter (§14): flattens the two nested percentile dicts into the flat
+    ``{metric_name: float}`` shape ``_results.save``/the regression-delta printer expect."""
+    results = main(dsn)
+    flat: dict[str, float] = {}
+    for label, pct in results.items():
+        prefix = "pgbouncer_autoprep_off" if "True" in label else "pgbouncer_autoprep_on"
+        for point, value in pct.items():
+            flat[f"{prefix}_{point}_ms"] = value
+    return flat
+
+
 if __name__ == "__main__":
     import sys
 

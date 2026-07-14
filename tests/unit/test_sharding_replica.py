@@ -43,6 +43,37 @@ def test_hash_resolver_rejects_invalid_num_shards() -> None:
         HashShardResolver(0)
 
 
+def test_hash_resolver_cache_returns_consistent_results() -> None:
+    """Performance review §10: repeated resolves for the same key must not recompute SHA-256
+    every call, but the cached result must be identical to a fresh (uncached) computation."""
+    resolver = HashShardResolver(4)
+    first = resolver.resolve("app", "tenant-1")
+    second = resolver.resolve("app", "tenant-1")  # served from cache
+    assert first == second
+    assert resolver._cache["tenant-1"] == first
+
+
+def test_hash_resolver_cache_is_bounded() -> None:
+    """The cache must not grow unboundedly for a high-cardinality key space (mirrors the
+    engine registry's own max_engines/evict_lru bound)."""
+    resolver = HashShardResolver(4)
+    resolver._CACHE_SIZE = 100  # shrink for a fast test
+    for i in range(500):
+        resolver.resolve("app", f"tenant-{i}")
+    assert len(resolver._cache) <= 100
+
+
+def test_hash_resolver_cache_eviction_keeps_correctness() -> None:
+    """Evicting a cache entry must not change the result on the next resolve for that key."""
+    resolver = HashShardResolver(4)
+    resolver._CACHE_SIZE = 10
+    baseline = {f"tenant-{i}": resolver.resolve("app", f"tenant-{i}") for i in range(3)}
+    for i in range(3, 100):  # evict everything from the baseline out of the cache
+        resolver.resolve("app", f"tenant-{i}")
+    for key, expected in baseline.items():
+        assert resolver.resolve("app", key) == expected
+
+
 # --- RangeShardResolver -------------------------------------------------------------- #
 
 

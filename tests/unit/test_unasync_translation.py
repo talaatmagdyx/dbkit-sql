@@ -44,6 +44,11 @@ class Widget:
 
     async def __aexit__(self, *exc: object) -> None:
         return None
+
+
+async def with_stack(conn: AsyncConnection) -> None:
+    async with contextlib.AsyncExitStack() as stack:
+        await stack.enter_async_context(conn.begin())
 """
 
 EXPECTED_SYNC_BODY = """\
@@ -69,6 +74,11 @@ class Widget:
 
     def __exit__(self, *exc: object) -> None:
         return None
+
+
+def with_stack(conn: Connection) -> None:
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(conn.begin())
 """
 
 

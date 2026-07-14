@@ -131,6 +131,7 @@ class ResilientExecutor:
                     "reads": cc.reads,
                     "writes": cc.writes,
                     "bulk": cc.bulk_writes,
+                    "expensive": cc.expensive_queries,
                 }
             )
             self._limiters[database] = limiter
@@ -165,13 +166,29 @@ class ResilientExecutor:
             limiter_timeout = effective_timeout(
                 timeout, q, self._config.defaults.query_timeout_seconds, deadline, time.monotonic()
             )
-            with (
-                limiter.acquire("database", timeout=limiter_timeout),
-                limiter.acquire(tier, timeout=limiter_timeout),
-                self.scope(
-                    target, query, call_timeout=timeout, deadline=deadline, commit=commit
-                ) as scope,
-            ):
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(
+                    limiter.acquire("database", timeout=limiter_timeout)
+                )
+                stack.enter_context(limiter.acquire(tier, timeout=limiter_timeout))
+                if q is not None and q.expensive:
+                    # A separate, additional tier for a small number of known-heavy queries
+                    # (§17) — acquired on top of the normal reads/writes tier, not instead of
+                    # it, so an expensive query still counts against ordinary capacity too.
+                    stack.enter_context(
+                        limiter.acquire("expensive", timeout=limiter_timeout)
+                    )
+                scope = stack.enter_context(
+                    self.scope(
+                        target,
+                        query,
+                        call_timeout=timeout,
+                        deadline=deadline,
+                        commit=commit,
+                        entry=entry,
+                        labels=labels,
+                    )
+                )
                 return op(scope)
 
         return run_with_retries(
@@ -195,11 +212,23 @@ class ResilientExecutor:
         call_timeout: float | None,
         deadline: float | None,
         commit: bool,
+        entry: EngineEntry | None = None,
+        labels: dict[str, str] | None = None,
     ) -> Iterator[ConnectionScope]:
-        """Acquire a short-lived connection scope, measure pool wait, emit metrics (§11.1)."""
-        entry, _route = self.entry(target)
+        """Acquire a short-lived connection scope, measure pool wait, emit metrics (§11.1).
+
+        ``entry``/``labels`` let a caller that already resolved them (``execute_with_resilience``,
+        which needs them itself for the breaker/limiter/retry-labels) pass them straight through
+        instead of this method redoing the registry lookup and rebuilding an identical labels
+        dict a second time per operation (performance review §4/§11 Finding #5). Callers that
+        invoke ``scope()`` directly (``db.connection()``, ``db.transaction()``, bulk executemany)
+        don't have them yet, so both remain optional and are resolved here when omitted.
+        """
+        if entry is None:
+            entry, _route = self.entry(target)
         query_name, operation, q = self.query_meta(query)
-        labels = self.labels(entry, query_name, operation)
+        if labels is None:
+            labels = self.labels(entry, query_name, operation)
         timeout = effective_timeout(
             call_timeout,
             q,

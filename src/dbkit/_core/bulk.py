@@ -29,16 +29,49 @@ class BulkLimits:
     max_payload_bytes: int | None = None
 
 
+def estimate_row_bytes(row: Mapping[str, Any]) -> int:
+    """Cheap upper-bound estimate of one row's serialized payload size, in bytes.
+
+    Not exact (actual bind-parameter wire encoding varies by driver/type), but good enough to
+    bound a batch's total payload size to roughly ``max_payload_bytes`` rather than not bounding
+    it at all — the field existed on :class:`BulkLimits`/``BulkConfig`` but ``resolve_batch_rows``
+    never read it, so a batch of many small-column, wide-value (e.g. large ``text``/``bytea``)
+    rows had no actual byte-size ceiling despite the config implying one (performance review §9).
+    """
+    total = 0
+    for value in row.values():
+        if value is None:
+            continue
+        if isinstance(value, (bytes, bytearray)):
+            total += len(value)
+        else:
+            total += len(str(value).encode("utf-8", errors="ignore"))
+    return total
+
+
 def resolve_batch_rows(
     n_columns: int,
     requested: int | None,
     limits: BulkLimits,
+    *,
+    sample_row: Mapping[str, Any] | None = None,
 ) -> int:
-    """Largest safe batch size in rows, given per-row column count and the limits."""
+    """Largest safe batch size in rows, given per-row column count and the limits.
+
+    When ``limits.max_payload_bytes`` is set and a ``sample_row`` is supplied, the ceiling is
+    also bounded by an estimated per-row byte size (:func:`estimate_row_bytes`) — a single
+    representative row is enough since batches are homogeneous (same columns, similar value
+    sizes), and re-estimating every row would cost more than the batching itself saves.
+    """
     if n_columns <= 0:
         return max(requested or limits.max_rows, 1)
     by_params = max(limits.max_params // n_columns, 1)
     ceiling = min(requested or limits.max_rows, limits.max_rows, by_params)
+    if limits.max_payload_bytes is not None and sample_row is not None:
+        row_bytes = estimate_row_bytes(sample_row)
+        if row_bytes > 0:
+            by_bytes = max(limits.max_payload_bytes // row_bytes, 1)
+            ceiling = min(ceiling, by_bytes)
     return max(ceiling, 1)
 
 

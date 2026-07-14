@@ -56,8 +56,14 @@ async def run_with_retries(
     Each attempt runs a *fresh* operation (new connection/transaction) — the caller supplies a
     thunk that re-does the work. Non-retryable errors, exhausted budgets, unknown-commit
     outcomes, and non-idempotent writes propagate immediately.
+
+    Total time spent retrying (backoff delays only, not attempt execution time) is bounded by
+    ``retry.maximum_total_ms`` regardless of ``attempts``/``deadline`` — without this, a caller
+    with a generous ``attempts`` count and no explicit ``deadline`` has no bound on how long a
+    single logical call can spend retrying (performance review §5/§7).
     """
     attempt = 0
+    started = time.monotonic()
     while True:
         attempt += 1
         now = time.monotonic()
@@ -89,6 +95,10 @@ async def run_with_retries(
             delay = backoff_delay_ms(attempt, retry, rand=random.random()) / 1000.0
             # never sleep past the caller deadline
             if deadline is not None and time.monotonic() + delay >= deadline:
+                raise
+            # never sleep past the retry budget, independent of any caller deadline
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            if elapsed_ms + delay * 1000.0 >= retry.maximum_total_ms:
                 raise
             metrics.incr(m.OP_RETRIES, labels={**labels, "retry_attempt": str(attempt)})
             await sleep(delay)

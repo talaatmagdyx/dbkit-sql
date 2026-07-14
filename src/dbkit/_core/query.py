@@ -80,6 +80,12 @@ class Query:
     #: CONFLICT``, ``WHERE NOT EXISTS``, or a natural-key ``UPDATE``/``DELETE``) — see
     #: ``dbkit query-list``, which flags writes that look unsafe by this heuristic.
     idempotent: bool = False
+    #: Marks this query for the separate ``expensive_queries`` concurrency tier
+    #: (``ConcurrencyConfig.expensive_queries``, §17), acquired *in addition to* the normal
+    #: reads/writes tier — for a small number of known-heavy queries (a big aggregation, an
+    #: ad-hoc report) that would otherwise be free to pile up alongside ordinary traffic and
+    #: saturate the database. Most queries should leave this ``False``.
+    expensive: bool = False
     expected_cardinality: Cardinality | None = None
     sensitive_parameters: frozenset[str] = field(default_factory=frozenset)
 

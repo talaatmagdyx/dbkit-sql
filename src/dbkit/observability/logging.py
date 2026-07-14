@@ -118,6 +118,28 @@ def long_transaction_warning(
     )
 
 
+def bulk_batch_dropped_warning(
+    *,
+    query_name: str,
+    database: str | None = None,
+    mode: str,
+    rows_dropped: int,
+    error_category: str | None = None,
+) -> None:
+    """Warn that a bulk batch (``best_effort``) or row (``split_on_failure``, after its batch
+    already failed) was dropped rather than written — this is the only signal a caller gets for
+    silently-lost rows under either failure mode (§19.3, performance review §9)."""
+    log_event(
+        logging.WARNING,
+        "database.bulk.rows_dropped",
+        query_name=query_name,
+        database=database,
+        mode=mode,
+        rows_dropped=rows_dropped,
+        error_category=error_category,
+    )
+
+
 def redacted_params_for_log(
     params: Mapping[str, Any] | None,
     *,

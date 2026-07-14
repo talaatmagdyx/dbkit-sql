@@ -66,6 +66,8 @@ jobs:
         run: uv run pytest -q -m integration
       - name: short soak with fault injection (leak/recovery gate)
         run: uv run python -m benchmarks.soak --dsn "$DBKIT_TEST_DSN" --duration 60 --kill-every 20
+      - name: performance regression gate (overhead ceiling + pool-exhaustion contract)
+        run: uv run python -m benchmarks.check_regression --dsn "$DBKIT_TEST_DSN"
       - name: benchmark smoke (best-effort, non-gating)
         run: uv run python -m benchmarks --dsn "$DBKIT_TEST_DSN" --no-save || echo "benchmarks best-effort"
 

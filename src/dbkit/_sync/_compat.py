@@ -11,12 +11,14 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, TypeVar
 
 IS_ASYNC = False
 
 #: Metric/label value distinguishing this frontend (§25.1).
 API_LABEL = "sync"
+
+T = TypeVar("T")
 
 
 def sync_engine_of(engine: Any) -> Any:
@@ -72,9 +74,9 @@ def is_cancellation(exc: BaseException) -> bool:
     return False
 
 
-@contextlib.contextmanager
-def cancellation_shield() -> Iterator[None]:
-    try:
-        yield
-    finally:
-        pass
+def shield_from_cancellation(result: T) -> T:
+    """Passthrough — the sync frontend has no cancellation to shield against: by the time this
+    is called, the protected cleanup (a plain function call, evaluated as this call's argument)
+    has already run to completion (mirrors ``_async/_compat.py``'s real ``asyncio.shield``-based
+    version, which the async build genuinely needs)."""
+    return result

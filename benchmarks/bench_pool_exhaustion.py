@@ -38,10 +38,10 @@ async def hold_connection(db: AsyncDatabase, i: int) -> tuple[int, str, float]:
         return i, "pool_timeout", time.monotonic() - start
 
 
-async def main() -> None:
+async def main(dsn: str | None = None) -> None:
     db = AsyncDatabase.from_config(
         {
-            "databases": {"app": {"primary": {"url": DSN}}},
+            "databases": {"app": {"primary": {"url": dsn or DSN}}},
             "defaults": {
                 "query_timeout_seconds": HOLD_SECONDS + 3.0,
                 "pool": {
@@ -78,6 +78,14 @@ async def main() -> None:
         )
     finally:
         await db.close()
+
+
+def run_all(dsn: str) -> dict[str, float]:
+    """SUITES adapter (§14): this is a pass/fail scenario assertion, not a rate-producing
+    benchmark, so it contributes no metrics — it just raises if the pool-exhaustion contract
+    (fail fast, classified, no hang) breaks."""
+    asyncio.run(main(dsn))
+    return {}
 
 
 if __name__ == "__main__":
