@@ -6,6 +6,60 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-15
+
+### Added
+- `AsyncDatabase.ensure_database(name, config)` — idempotent registration: no-op when the
+  config is unchanged (lock-free, a few µs), (re)registers when missing or changed. Safe to
+  call in front of every query; config changes (including password-only rotations) take
+  effect in place with old engines disposed.
+- **Dynamic-first configs**: an explicit empty ``databases: {}`` mapping is now valid —
+  services that discover every DSN at runtime bootstrap with no static databases. A missing
+  ``databases`` key is still rejected.
+- **Dynamic database registration**: `AsyncDatabase.register_database(name, config)` /
+  `unregister_database(name)` (sync mirror included) — register shard/tenant databases whose
+  DSNs are discovered at runtime (e.g. from a service registry), without a service-side engine
+  registry. Copy-on-write config swap (readers never see a partial mapping), single-flight
+  registration lock, engine + limiter + breaker cleanup on replace/unregister, replica-selector
+  updates, and eager engine creation for `required` primaries when already started.
+- `AsyncDatabase.database_scope(name, config)` — context-manager form: register for the
+  duration of a block (tests, migrations, one-off tenant jobs), auto-unregister + dispose on
+  exit. Documented anti-pattern: never scope per request — that defeats pooling; services
+  register long-lived shards once.
+- `DatabaseConfig.from_dict(...)` — build one database config from the same dict shape as a
+  `databases` entry.
+- `AsyncEngineRegistry.dispose_database(name)` and `ResilientExecutor.forget_database(name)`.
+- `RoundRobinReplicaSelector.set_replicas(...)` / `WeightedReplicaSelector.set_replicas(...)`
+  for runtime replica updates.
+- `dbkit.errors.OVERLOAD_CATEGORIES` / `TIMEOUT_CATEGORIES` — canonical category groupings for
+  HTTP mapping (503-retryable vs 504) so services stop hand-rolling exception lists.
+- **`dbkit.integrations.fastapi`**: `install_exception_handlers(app)` maps `DatabaseError` by
+  category to RFC 7807 responses — 503 + `Retry-After` for overload, 504 for timeouts, 500 for
+  bugs. New optional extra: `dbkit-sql[fastapi]` (Starlette only, imported lazily).
+- `py.typed` marker — mypy-strict consumers now get real types instead of `Any`.
+- **`Query.settings`** — per-query, transaction-local PostgreSQL settings (e.g.
+  ``{"jit": "off"}``, ``{"work_mem": "64MB"}``) applied via parameterized
+  ``set_config(name, value, true)`` right before the statement; names validated, values bound,
+  never leaks past the statement's transaction.
+- **`dbkit.testing`**: `FakeAsyncDatabase` / `FakeDatabase` — in-memory test doubles that
+  record every call (name, statement, params, target, settings, in_transaction) and return
+  queued rows; dynamic-registration tracking included.
+- **`max_databases`** config — LRU cap on dynamically registered databases: beyond it the
+  least-recently-ensured dynamic database is fully purged (engines, limiter, breakers,
+  selector entry). Static databases are never evicted.
+- `install_exception_handlers(..., database=db)` — the 503 ``Retry-After`` header now derives
+  from the circuit breaker's ``open_seconds`` when a facade is provided.
+- Docs: new "Dynamic Registration" guide; FastAPI/`Query.settings` sections in the
+  integrations reference; `dbkit.testing` section in Testing & Benchmarks.
+
+### Fixed
+- ``observability.metrics: true`` (the default) now actually wires a Prometheus sink when
+  ``prometheus_client`` is installed — previously the default was silently no-op. The sink is a
+  process-wide singleton so multiple facades share collectors safely.
+- Dynamic registration now enforces the process-wide connection budget at admission time
+  (``connection_budget.maximum_per_process`` + ``enforce_at_startup``) — a runtime-registered
+  database can no longer push the process past its configured ceiling.
+
 ## [0.1.0] - 2026-07-15
 
 First public release on PyPI as `dbkit-sql` (import name: `dbkit`).

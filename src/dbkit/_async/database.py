@@ -7,8 +7,10 @@ COPY, metrics, and graceful startup/shutdown.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import logging
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -18,7 +20,7 @@ from sqlalchemy import Table, insert
 from sqlalchemy.dialects import postgresql
 
 from .._core import bulk as bulk_mod
-from .._core.config import DbkitConfig
+from .._core.config import DatabaseConfig, DbkitConfig
 from .._core.errors import (
     DatabaseError,
     DatabaseRoutingError,
@@ -38,7 +40,7 @@ from .._core.routing import (
 from .._pool import PoolSnapshot
 from ..observability import logging as obslog
 from ..observability import metrics as m
-from ..observability.metrics import MetricsSink, NoopMetrics
+from ..observability.metrics import MetricsSink, NoopMetrics, default_metrics_sink
 from ..observability.tracing import Tracer, make_tracer
 from ..postgres import unnest as unnest_mod
 from ._compat import copy_from_records
@@ -99,6 +101,12 @@ class AsyncDatabase:
             tracer=self._tracer,
         )
         self._started = False
+        # Serializes dynamic register/unregister so concurrent registrations of the
+        # same name cannot interleave purge/swap steps.
+        self._registration_lock = asyncio.Lock()
+        # Dynamic-database LRU (§22.4): statically configured names are never evicted.
+        self._static_databases = frozenset(config.databases)
+        self._dynamic_lru: dict[str, None] = {}
 
     # -- construction ------------------------------------------------------------- #
 
@@ -171,6 +179,195 @@ class AsyncDatabase:
     async def __aexit__(self, *exc: object) -> None:
         """Calls :meth:`close`."""
         await self.close()
+
+    # -- dynamic registration (§22.4) ---------------------------------------------- #
+
+    async def register_database(
+        self,
+        name: str,
+        config: DatabaseConfig | Mapping[str, Any],
+        *,
+        connect: bool | None = None,
+    ) -> bool:
+        """Register (or replace) a named database at runtime.
+
+        For topologies discovered after :meth:`start` — e.g. shard DSNs resolved per
+        tenant from a service registry — so callers do not need to maintain their own
+        engine registries. ``config`` is a :class:`DatabaseConfig` or the same dict
+        shape as one entry under the top-level ``databases`` mapping.
+
+        The database map is swapped copy-on-write, so concurrent readers always see a
+        complete mapping. Replacing an existing name first disposes its engines and
+        resets its limiter/breakers, so the new settings fully apply. Returns ``True``
+        when an existing entry was replaced.
+
+        ``connect`` forces (or suppresses) eager engine creation; the default follows
+        ``primary.required`` when the facade is already started. Engine creation is
+        lazy in SQLAlchemy, so this never blocks on the network unless the pool is
+        warmed explicitly.
+        """
+        db = (
+            config
+            if isinstance(config, DatabaseConfig)
+            else DatabaseConfig.from_dict(config, name=name)
+        )
+        db.validate()
+        db.enforce_connection_budget(self._config.defaults, database_name=name)
+        async with self._registration_lock:
+            replaced = name in self._config.databases
+            prospective = dict(self._config.databases)
+            prospective[name] = db
+            # No random pool growth at the fleet level either: admitting this database
+            # must not push the process past its configured connection budget (§10.3).
+            dataclasses.replace(self._config, databases=prospective).enforce_connection_budget()
+            if replaced:
+                await self._purge_database_state(name)
+            databases = dict(self._config.databases)
+            databases[name] = db
+            # DbkitConfig is a frozen dataclass; swap the mapping atomically.
+            object.__setattr__(self._config, "databases", databases)
+            self._set_selector_replicas(name, db)
+            self._touch_dynamic(name)
+            await self._evict_lru_databases_locked()
+            if connect is None:
+                connect = self._started and db.primary.required
+            if connect:
+                await self._registry.get(
+                    ResolvedRoute(database=name, shard_id="default", role="primary")
+                )
+        obslog.log_event(logging.INFO, "database.registered", database=name, replaced=replaced)
+        return replaced
+
+    async def ensure_database(
+        self,
+        name: str,
+        config: DatabaseConfig | Mapping[str, Any],
+        *,
+        connect: bool | None = None,
+    ) -> bool:
+        """Idempotent :meth:`register_database`: act only when ``name`` is missing or its
+        config changed. Returns ``True`` when a (re)registration actually happened.
+
+        The unchanged path is lock-free and cheap (build + compare one frozen config,
+        a few µs), so callers routing by runtime topology can call this in front of
+        every query::
+
+            await db.ensure_database(shard_id, {"primary": {"url": dsn}})
+            rows = await db.fetch_all(query, params,
+                                      target=DatabaseTarget(database=shard_id, role="read"))
+
+        A changed config (rotated host, credentials, pool settings) re-registers in
+        place: old engines are disposed and the next query connects with the new
+        settings — no restart needed, including password-only rotations.
+        """
+        db = (
+            config
+            if isinstance(config, DatabaseConfig)
+            else DatabaseConfig.from_dict(config, name=name)
+        )
+        if self._config.databases.get(name) == db:
+            self._touch_dynamic(name)
+            return False
+        await self.register_database(name, db, connect=connect)
+        return True
+
+    async def unregister_database(self, name: str) -> bool:
+        """Remove a dynamically (or statically) registered database and dispose its
+        engines, limiter, and breakers. Returns ``False`` if ``name`` is unknown.
+
+        In-flight operations against the database finish on their checked-out
+        connections (idle-only disposal); new calls raise ``DatabaseRoutingError``.
+        """
+        async with self._registration_lock:
+            if name not in self._config.databases:
+                return False
+            await self._purge_database_state(name)
+            databases = dict(self._config.databases)
+            del databases[name]
+            object.__setattr__(self._config, "databases", databases)
+            self._clear_selector_replicas(name)
+            self._dynamic_lru.pop(name, None)
+        obslog.log_event(logging.INFO, "database.unregistered", database=name)
+        return True
+
+    @contextlib.asynccontextmanager
+    async def database_scope(
+        self,
+        name: str,
+        config: DatabaseConfig | Mapping[str, Any],
+        *,
+        connect: bool | None = None,
+    ) -> AsyncIterator[DatabaseTarget]:
+        """Register ``name`` for the duration of the block, then unregister it.
+
+        Yields a primary-routed :class:`DatabaseTarget` for convenience::
+
+            async with db.database_scope("tenant-42", {"primary": {"url": dsn}}) as target:
+                rows = await db.fetch_all(query, params, target=target)
+
+        **Scope this to a unit of work, never to a request.** Engines/pools are
+        created on first use inside the block and disposed on exit — wrapping every
+        HTTP request in a scope recreates connections each time and defeats pooling
+        entirely. Intended uses: tests, migrations, one-off tenant batch jobs, or an
+        ad-hoc query against a shard the process does not normally serve. Long-lived
+        services should call :meth:`register_database` once per discovered shard and
+        keep it registered.
+        """
+        await self.register_database(name, config, connect=connect)
+        try:
+            yield DatabaseTarget(database=name)
+        finally:
+            await self.unregister_database(name)
+
+    def _touch_dynamic(self, name: str) -> None:
+        """Mark a dynamically registered database as recently used (LRU order)."""
+        if name in self._static_databases:
+            return
+        self._dynamic_lru.pop(name, None)
+        self._dynamic_lru[name] = None  # dicts preserve insertion order
+
+    async def _evict_lru_databases_locked(self) -> None:
+        """Unregister least-recently-used dynamic databases beyond ``max_databases``.
+
+        Called under ``_registration_lock``. Eviction fully purges the victim:
+        engines disposed, limiter and breakers reset, selector entry dropped.
+        """
+        limit = self._config.max_databases
+        if limit is None:
+            return
+        while len(self._dynamic_lru) > limit:
+            victim = next(iter(self._dynamic_lru))
+            self._dynamic_lru.pop(victim, None)
+            await self._purge_database_state(victim)
+            databases = dict(self._config.databases)
+            databases.pop(victim, None)
+            object.__setattr__(self._config, "databases", databases)
+            self._clear_selector_replicas(victim)
+            obslog.log_event(logging.INFO, "database.evicted", database=victim)
+
+    async def _purge_database_state(self, name: str) -> None:
+        """Dispose engines + reset resilience state for one database."""
+        await self._registry.dispose_database(name)
+        self._executor.forget_database(name)
+
+    def _set_selector_replicas(self, name: str, db: DatabaseConfig) -> None:
+        """Update the replica selector for a (re)registered database, if it supports it.
+
+        The built-in selectors implement ``set_replicas``; custom selectors that do not
+        are left untouched (they own their routing state).
+        """
+        set_replicas = getattr(self._replicas, "set_replicas", None)
+        if set_replicas is None:
+            return
+        if isinstance(self._replicas, RoundRobinReplicaSelector):
+            set_replicas(name, [r.name for r in db.replicas])
+        else:
+            set_replicas(name, [(r.name, r.weight) for r in db.replicas])
+
+    def _clear_selector_replicas(self, name: str) -> None:
+        set_replicas = getattr(self._replicas, "set_replicas", None)
+        if set_replicas is not None:
+            set_replicas(name, [])
 
     # -- routing ------------------------------------------------------------------ #
 
@@ -881,4 +1078,6 @@ class _BulkPlan:
 
 
 def _make_default_metrics(config: DbkitConfig) -> MetricsSink:
-    return NoopMetrics()
+    """Honor ``observability.metrics: true`` (the default): Prometheus when available,
+    no-op otherwise. Shared process-wide singleton — see :func:`default_metrics_sink`."""
+    return default_metrics_sink()

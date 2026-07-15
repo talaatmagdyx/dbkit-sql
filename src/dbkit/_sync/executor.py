@@ -137,6 +137,17 @@ class ResilientExecutor:
             self._limiters[database] = limiter
         return limiter
 
+    def forget_database(self, database: str) -> None:
+        """Drop cached limiter and circuit breakers for ``database`` (§22.4).
+
+        Called on dynamic unregister/replace so a re-registered database rebuilds its
+        resilience state from the new config instead of reusing stale objects.
+        """
+        self._limiters.pop(database, None)
+        prefix = f"{self._config.environment}:{database}:"
+        for key in [k for k in self._breakers if k.startswith(prefix)]:
+            del self._breakers[key]
+
     def execute_with_resilience(
         self,
         target: DatabaseTarget,

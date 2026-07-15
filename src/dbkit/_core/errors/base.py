@@ -33,6 +33,28 @@ class ErrorCategory(enum.Enum):
     UNSUPPORTED = "unsupported"
 
 
+#: Categories meaning the pool/limiter/breaker shed load or the backend is unreachable —
+#: the request is retryable and an HTTP API should answer 503 (+ Retry-After).
+OVERLOAD_CATEGORIES: frozenset[ErrorCategory] = frozenset(
+    {
+        ErrorCategory.POOL,
+        ErrorCategory.CONCURRENCY,
+        ErrorCategory.RESILIENCE,
+        ErrorCategory.AVAILABILITY,
+        ErrorCategory.CONNECTION,
+    }
+)
+
+#: Categories meaning the query exceeded its time budget — an HTTP API should answer 504.
+TIMEOUT_CATEGORIES: frozenset[ErrorCategory] = frozenset(
+    {
+        ErrorCategory.TIMEOUT,
+        ErrorCategory.CANCELLED,
+        ErrorCategory.LOCK,
+    }
+)
+
+
 class DatabaseError(Exception):
     """Base class for every error dbkit raises (§13.1).
 

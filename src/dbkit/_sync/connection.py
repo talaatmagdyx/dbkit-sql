@@ -14,6 +14,7 @@ mapping, timeouts, and error classification live in exactly one place.
 from __future__ import annotations
 
 import contextlib
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -23,7 +24,12 @@ from sqlalchemy.exc import MultipleResultsFound, NoResultFound
 from sqlalchemy import Connection
 
 from .._core import result as result_mod
-from .._core.errors import DatabaseResultError, classify
+from .._core.errors import (
+    DatabaseProgrammingError,
+    DatabaseResultError,
+    DatabaseUnsupportedOperationError,
+    classify,
+)
 from .._core.query import Query, Statement, coerce_statement
 from ._compat import IS_ASYNC, pipeline_scope, timeout_scope
 
@@ -37,6 +43,30 @@ def apply_statement_timeout_sql(seconds: float | None) -> str | None:
         return None
     ms = max(int(seconds * 1000), 1)
     return f"SET LOCAL statement_timeout = {ms}"
+
+
+_SETTING_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+
+
+def _apply_local_settings(
+    conn: Connection, settings: Mapping[str, str] | None, *, is_postgres: bool
+) -> None:
+    """Apply ``Query.settings`` with transaction-local scope (§12.4).
+
+    Uses parameterized ``set_config(name, value, true)`` so values are never
+    interpolated; setting names are whitelist-validated. PostgreSQL only.
+    """
+    if not settings:
+        return
+    if not is_postgres:
+        raise DatabaseUnsupportedOperationError("Query.settings requires PostgreSQL")
+    for name, value in settings.items():
+        if not _SETTING_NAME_RE.fullmatch(name):
+            raise DatabaseProgrammingError(f"invalid setting name in Query.settings: {name!r}")
+        conn.execute(
+            text("SELECT set_config(:setting_name, :setting_value, true)"),
+            {"setting_name": name, "setting_value": str(value)},
+        )
 
 
 def _maybe_set_timeout(
@@ -215,6 +245,9 @@ class ConnectionScope:
         """Run a read and return every row, mapped to ``map_to`` (no cardinality check)."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
+            _apply_local_settings(
+                self._conn, _q.settings if _q else None, is_postgres=self._is_postgres
+            )
             rows = run_fetch(
                 self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
             )
@@ -230,6 +263,9 @@ class ConnectionScope:
         """Run a read expecting exactly one row; raises :class:`DatabaseResultError` otherwise."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
+            _apply_local_settings(
+                self._conn, _q.settings if _q else None, is_postgres=self._is_postgres
+            )
             row = run_fetch_one(
                 self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
             )
@@ -259,6 +295,9 @@ class ConnectionScope:
         """Run a read expecting zero or one row; ``None`` if empty, else the mapped row."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
+            _apply_local_settings(
+                self._conn, _q.settings if _q else None, is_postgres=self._is_postgres
+            )
             row = run_fetch_optional(
                 self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
             )
@@ -281,6 +320,9 @@ class ConnectionScope:
         """Run a read expecting exactly one row and return its first column."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
+            _apply_local_settings(
+                self._conn, _q.settings if _q else None, is_postgres=self._is_postgres
+            )
             return run_fetch_value(
                 self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
             )
@@ -309,6 +351,9 @@ class ConnectionScope:
         """Run a read and return the first column of every row."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
+            _apply_local_settings(
+                self._conn, _q.settings if _q else None, is_postgres=self._is_postgres
+            )
             return run_fetch_values(
                 self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
             )
@@ -321,6 +366,9 @@ class ConnectionScope:
         """Run a write/DDL statement and return the affected row count."""
         statement, _q, timeout, name = self._resolve(query, params)
         try:
+            _apply_local_settings(
+                self._conn, _q.settings if _q else None, is_postgres=self._is_postgres
+            )
             cursor = run_execute(
                 self._conn, statement, params, timeout=timeout, is_postgres=self._is_postgres
             )

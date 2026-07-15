@@ -9,6 +9,7 @@ docs_dir: docs
 
 nav:
   - Home: index.md
+  - Dynamic Registration: dynamic-registration.md
   - CLI: cli.md
   - API Reference:
       - Database (async/sync): api/database.md

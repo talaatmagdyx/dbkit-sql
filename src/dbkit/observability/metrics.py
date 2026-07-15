@@ -102,6 +102,22 @@ def try_prometheus_sink(namespace: str = "dbkit") -> MetricsSink:
     return PrometheusMetrics(namespace=namespace)
 
 
+_DEFAULT_SINK: MetricsSink | None = None
+
+
+def default_metrics_sink() -> MetricsSink:
+    """The process-wide default sink: Prometheus when ``prometheus_client`` is
+    installed, otherwise no-op. A singleton — Prometheus collectors live in the
+    global registry, so every facade in the process must share one sink."""
+    global _DEFAULT_SINK
+    if _DEFAULT_SINK is None:
+        try:
+            _DEFAULT_SINK = try_prometheus_sink()
+        except Exception:  # prometheus_client not installed
+            _DEFAULT_SINK = NoopMetrics()
+    return _DEFAULT_SINK
+
+
 def try_otel_metrics_sink(meter_name: str = "dbkit", meter_provider: Any = None) -> MetricsSink:
     """Construct an OpenTelemetry Metrics-backed sink, or raise if ``opentelemetry-api`` is
     missing. An alternative to :func:`try_prometheus_sink` — pick one per deployment."""

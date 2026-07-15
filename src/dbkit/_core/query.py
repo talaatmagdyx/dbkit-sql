@@ -12,6 +12,7 @@ un-parameterized-query footgun, so we force an explicit, greppable wrapper.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -88,6 +89,11 @@ class Query:
     expensive: bool = False
     expected_cardinality: Cardinality | None = None
     sensitive_parameters: frozenset[str] = field(default_factory=frozenset)
+    #: Per-query PostgreSQL settings applied with transaction-local scope
+    #: (``set_config(name, value, true)``) right before the statement — e.g.
+    #: ``{"jit": "off"}`` for capped count probes or ``{"work_mem": "64MB"}`` for a
+    #: known-heavy aggregation. Names are validated; values are bound parameters.
+    settings: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         """Reject bare-string statements/empty names and normalize ``sensitive_parameters``."""
