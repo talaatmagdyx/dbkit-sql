@@ -329,6 +329,23 @@ tracking), and LRU engine eviction bounded by `max_engines` so a dynamic or unbo
 space still keeps a bounded number of live connections. No cross-shard transactions — pair with
 an outbox/saga pattern for multi-shard writes.
 
+### Dynamic registration (0.2)
+
+Databases whose DSNs are discovered at runtime (per-tenant shards from a service registry,
+rotated credentials) register on the fly — no application-side engine registry:
+
+```python
+db = AsyncDatabase.from_config({"databases": {}, "max_databases": 500})  # dynamic-first
+
+await db.ensure_database(shard, {"primary": {"url": dsn}})   # lock-free no-op when unchanged
+rows = await db.fetch_all(query, params, target=DatabaseTarget(database=shard, role="read"))
+```
+
+Changed configs (host moves, password rotations) re-register in place with old engines
+disposed; `max_databases` LRU-evicts idle dynamic shards; registration respects the
+process-wide connection budget. See the
+[Dynamic Registration guide](https://talaatmagdyx.github.io/dbkit-sql/dynamic-registration/).
+
 ## Building blocks, batteries included
 
 | Building block | Job |

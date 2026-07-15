@@ -216,6 +216,19 @@ class RoundRobinReplicaSelector:
         self._counters[database] = self._counters.get(database, 0) + 1
         return names[idx]
 
+    def set_replicas(self, database: str, names: Sequence[str]) -> None:
+        """Register/replace ``database``'s replica rotation at runtime.
+
+        Called by ``register_database``/``unregister_database`` so dynamically added
+        databases participate in read routing; an empty ``names`` removes the entry.
+        """
+        if names:
+            self._names[database] = list(names)
+            self._counters.setdefault(database, 0)
+        else:
+            self._names.pop(database, None)
+            self._counters.pop(database, None)
+
 
 class WeightedReplicaSelector:
     """Weighted-random replica selection using each replica's configured weight (§23)."""
@@ -246,3 +259,10 @@ class WeightedReplicaSelector:
             if r < upto:
                 return name
         return specs[-1][0]
+
+    def set_replicas(self, database: str, specs: Sequence[tuple[str, int]]) -> None:
+        """Register/replace ``database``'s weighted replicas at runtime (empty removes)."""
+        if specs:
+            self._replicas[database] = list(specs)
+        else:
+            self._replicas.pop(database, None)

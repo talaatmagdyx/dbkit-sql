@@ -80,7 +80,7 @@ def test_missing_config_file_exits_nonzero(tmp_path) -> None:
 
 def test_invalid_config_exits_nonzero(tmp_path) -> None:
     path = tmp_path / "bad.yaml"
-    path.write_text("databases: {}")
+    path.write_text("databases:\n  app: {}\n")  # database without a primary target
     result = runner.invoke(app, ["config-validate", str(path)])
     assert result.exit_code == 1
     assert "configuration error" in result.output

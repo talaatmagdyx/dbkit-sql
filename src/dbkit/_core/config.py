@@ -259,6 +259,12 @@ class DatabaseConfig:
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     connection_budget: ConnectionBudgetConfig = field(default_factory=ConnectionBudgetConfig)
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any], *, name: str = "database") -> DatabaseConfig:
+        """Build one database config from a plain dict — the same shape as an entry under
+        the top-level ``databases`` mapping. Used by dynamic registration (§22.4)."""
+        return _database(name, data)
+
     def validate(self) -> None:
         """Raise :class:`DatabaseConfigurationError` if the primary or any replica is invalid."""
         self.primary.validate()
@@ -297,6 +303,10 @@ class DbkitConfig:
     #: Process-wide cap on live engines (across all databases/shards/tenants), for dynamic
     #: per-tenant deployments where the number of distinct tenants may be unbounded (§22.4).
     max_engines: int | None = None
+    #: Cap on DYNAMICALLY registered databases (§22.4): beyond it, the least-recently
+    #: used dynamic database is unregistered (engines disposed, limiter/breakers reset).
+    #: Statically configured databases are never evicted. ``None`` = unbounded.
+    max_databases: int | None = None
     #: When True and ``max_engines`` is reached, evict (dispose) the least-recently-used
     #: engine instead of failing. Default False: exceeding the cap is a configuration error.
     evict_lru_engines: bool = False
@@ -353,8 +363,8 @@ class DbkitConfig:
     def validate(self) -> None:
         """Raise :class:`DatabaseConfigurationError` if any database or the process-wide
         connection budget is invalid."""
-        if not self.databases:
-            raise DatabaseConfigurationError("configuration defines no databases")
+        # An explicitly empty mapping is allowed: dynamic-first services register every
+        # database at runtime via register_database/ensure_database (§22.4).
         self.defaults.validate()
         for name, db in self.databases.items():
             if not name:
@@ -599,7 +609,9 @@ def _database(name: str, data: Mapping[str, Any]) -> DatabaseConfig:
 
 def _build_config(raw: Mapping[str, Any]) -> DbkitConfig:
     databases_raw = raw.get("databases")
-    if not databases_raw:
+    if databases_raw is None:
+        # Explicit `databases: {}` is valid (dynamic-first, §22.4); a MISSING key is
+        # still a config bug worth failing loudly on.
         raise DatabaseConfigurationError("configuration must define a 'databases' mapping")
     databases = {name: _database(name, cfg) for name, cfg in databases_raw.items()}
     max_engines = raw.get("max_engines")
@@ -609,5 +621,6 @@ def _build_config(raw: Mapping[str, Any]) -> DbkitConfig:
         defaults=_defaults(raw.get("defaults")),
         connection_budget=_budget(raw.get("connection_budget")),
         max_engines=int(max_engines) if max_engines is not None else None,
+        max_databases=int(raw["max_databases"]) if raw.get("max_databases") is not None else None,
         evict_lru_engines=bool(raw.get("evict_lru_engines", False)),
     )

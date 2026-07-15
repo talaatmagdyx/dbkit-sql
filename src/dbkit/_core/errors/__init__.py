@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from .base import (
+    OVERLOAD_CATEGORIES,
+    TIMEOUT_CATEGORIES,
     DatabaseCancellationError,
     DatabaseCheckViolationError,
     DatabaseCircuitOpenError,
@@ -37,6 +39,8 @@ from .redaction import redact_dsn, redact_params, sanitize_message
 from .sqlstate import error_class_for_sqlstate
 
 __all__ = [
+    "OVERLOAD_CATEGORIES",
+    "TIMEOUT_CATEGORIES",
     "DatabaseCancellationError",
     "DatabaseCheckViolationError",
     "DatabaseCircuitOpenError",

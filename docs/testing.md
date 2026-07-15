@@ -1,5 +1,35 @@
 # Testing, chaos, and benchmarks
 
+## Unit-testing consumers: `dbkit.testing`
+
+`FakeAsyncDatabase` / `FakeDatabase` mirror the facade's query surface without a server:
+queue result sets, run your code, assert on the recorded calls.
+
+```python
+from dbkit.testing import FakeAsyncDatabase
+
+fake = FakeAsyncDatabase()
+fake.queue_rows([{"id": 1, "email": "a@x"}])
+
+service = UserService(db=fake)
+users = await service.list_users(org=7)
+
+call = fake.calls[0]
+assert call.query_name == "users.list"
+assert call.params == {"org": 7}
+assert call.target.database == "app"
+assert not call.in_transaction
+```
+
+Transactions yield the same fake (calls record `in_transaction=True`); dynamic
+registration is tracked in `fake.registered`. `Query.settings` and the statement
+text are captured per call for asserting SQL shape.
+
+::: dbkit.testing.FakeAsyncDatabase
+
+::: dbkit.testing.RecordedCall
+
+
 dbkit has five layers of verification. All commands go through `uv run` (see the `Makefile`).
 
 ## 1. Static gate (no database)

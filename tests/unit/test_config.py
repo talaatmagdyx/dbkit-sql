@@ -150,9 +150,15 @@ def test_redacted_hides_passwords() -> None:
     assert "secret" in cfg.databases["app"].primary.url
 
 
-def test_missing_databases_rejected() -> None:
+def test_missing_databases_key_rejected() -> None:
     with pytest.raises(DatabaseConfigurationError):
-        DbkitConfig.from_dict({"databases": {}})
+        DbkitConfig.from_dict({})
+
+
+def test_explicit_empty_databases_allowed_for_dynamic_first() -> None:
+    # Dynamic-first services register every database at runtime (§22.4)
+    config = DbkitConfig.from_dict({"databases": {}})
+    assert config.databases == {}
 
 
 def test_missing_primary_rejected() -> None:

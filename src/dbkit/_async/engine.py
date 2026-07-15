@@ -230,3 +230,18 @@ class AsyncEngineRegistry:
         await entry.engine.dispose()
         self._metrics.incr(m.CONN_CLOSED, labels=entry.labels)
         return True
+
+    async def dispose_database(self, database: str) -> int:
+        """Dispose every engine belonging to ``database`` and return how many were dropped.
+
+        Used by dynamic ``register_database``/``unregister_database`` (§22.4) so a replaced
+        or removed database releases all of its pools. Same idle-only semantics as
+        :meth:`dispose_one` — in-flight connections finish before closing.
+        """
+        async with self._lock:
+            keys = [key for key, entry in self._entries.items() if entry.key.database == database]
+            victims = [self._entries.pop(key) for key in keys]
+        for victim in victims:
+            await victim.engine.dispose()
+            self._metrics.incr(m.CONN_CLOSED, labels=victim.labels)
+        return len(victims)
