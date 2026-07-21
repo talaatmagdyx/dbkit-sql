@@ -102,8 +102,9 @@ See `docs/requirements.md` for the full product/engineering requirements this ro
   the caller closes it (regression-tested). Default (`evict_lru=False`) keeps the strict
   hard-cap.
 - No cross-shard transactions — an application needing atomic multi-shard writes needs its own
-  outbox/saga pattern; dbkit also does not authorize `DatabaseTarget`/shard-key values, so
-  tenant/shard access control is the calling application's responsibility.
+  saga; dbkit ships a **single-shard** transactional outbox (`dbkit.integrations`, 0.3) but does
+  not coordinate distributed transactions. dbkit also does not authorize `DatabaseTarget`/shard-key
+  values, so tenant/shard access control is the calling application's responsibility.
 - Per-database connection budgets (`DatabaseConfig.enforce_connection_budget`): a single
   database can fail startup on its own budget, independent of the global one.
 - `AsyncEngineRegistry.dispose_one()` / `AsyncDatabase.drain_engine()` (`Database.drain_engine()`
