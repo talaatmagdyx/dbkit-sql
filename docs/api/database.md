@@ -20,6 +20,23 @@ shortcut and not notice you've silently disabled error handling for that code pa
 normal `db.execute`/`fetch_*`/`stream`/bulk methods for anything that isn't one of the two
 documented raw-driver escape hatches.
 
+## Advisory locks (transaction scope)
+
+The scope from `db.transaction(...)` also exposes transaction-scoped PostgreSQL advisory locks —
+cooperative locks on a logical key (an order id, an engagement id) rather than on rows:
+
+```python
+async with db.transaction(target=t, lock_timeout=3.0) as tx:
+    await tx.advisory_xact_lock("engagement:42")   # blocks until granted; auto-released at commit
+    ...                                            # read-modify-write, serialized per key
+```
+
+`await tx.advisory_xact_lock(key)` blocks until granted and holds until the transaction ends
+(there is no manual unlock — it can't leak); a wait beyond the transaction's `lock_timeout` raises
+`DatabaseLockTimeoutError`. `await tx.try_advisory_xact_lock(key) -> bool` is the non-blocking
+variant (`False` if another transaction holds it). `key` is an `int` (used directly) or a `str`
+(hashed server-side); it is always bound, never interpolated. PostgreSQL only.
+
 ::: dbkit.AsyncDatabase
 
 ::: dbkit.Database

@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-21
+
+### Added
+- **Transaction-scoped advisory locks** on the transaction scope (§11.7, sync mirror included):
+  `await tx.advisory_xact_lock(key)` (blocking, auto-released at commit/rollback — cannot leak) and
+  `await tx.try_advisory_xact_lock(key) -> bool` (non-blocking). `key` is an `int` (used directly)
+  or a `str` (hashed server-side via `hashtextextended`) — always bound, never interpolated. Waits
+  respect the transaction's `lock_timeout` (→ `DatabaseLockTimeoutError`). PostgreSQL only; raises
+  `DatabaseUnsupportedOperationError` otherwise. Serializes a read-modify-write on a logical key
+  without locking rows.
+- **Transactional outbox** helpers in `dbkit.integrations` (the mirror of the inbox, §28.4):
+  `outbox_ddl` / `partitioned_outbox_ddl` / `outbox_month_partition_ddl` (schema-agnostic DDL),
+  `enqueue(tx, *, topic, payload, table=...)` (insert an event on the caller's transaction, atomic
+  with the business write), and `drain(db, *, target, publish, batch_size=..., table=...)` (relay
+  unsent rows with `FOR UPDATE SKIP LOCKED`, publish, mark sent — at-least-once). Single-shard;
+  pair with the consumer-side inbox for effectively-once. Payload is opaque JSON — no product- or
+  dbkit-specific columns. New examples `advisory_locks.py` + `transactional_outbox.py`.
+
 ## [0.2.0] - 2026-07-15
 
 ### Added

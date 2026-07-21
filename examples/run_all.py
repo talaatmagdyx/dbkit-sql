@@ -19,6 +19,8 @@ SCRIPTS = [
     "quickstart_async.py",
     "quickstart_sync.py",
     "transactions_savepoints.py",
+    "advisory_locks.py",
+    "transactional_outbox.py",
     "error_handling.py",
     "retries_and_circuit_breaker.py",
     "streaming.py",

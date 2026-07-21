@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbkit-sql"
-version = "0.2.0"
+version = "0.3.0"
 description = "A thin, high-throughput SQL toolkit over SQLAlchemy Core — sync and async, ORM-free."
 readme = "README.md"
 requires-python = ">=3.11"
