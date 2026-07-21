@@ -72,4 +72,5 @@ about either warning.
 
 Each `DatabaseTarget` resolves to exactly one shard; dbkit has no distributed-transaction/2PC
 primitive. An operation that must atomically touch multiple shards needs an application-level
-pattern (outbox, saga) — this is a deliberate scope boundary, not a missing feature.
+saga — this is a deliberate scope boundary, not a missing feature. (For reliable event publishing
+within a **single** shard, dbkit does ship a transactional outbox — see `dbkit.integrations`.)
