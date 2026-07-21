@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v6
       - run: uv python install 3.12
       - run: uv sync --extra dev
       - name: unasync drift check
@@ -37,7 +37,7 @@ jobs:
         python: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v6
       - run: uv python install ${{ matrix.python }}
       - run: uv sync --extra dev
       - run: uv run pytest -q -m "not integration" --cov=dbkit --cov-report=term-missing
@@ -59,7 +59,7 @@ jobs:
       DBKIT_TEST_DSN: postgresql+psycopg://dbkit:dbkit@localhost:5432/dbkit
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v6
       - run: uv python install 3.12
       - run: uv sync --extra dev
       - name: integration + chaos/resilience suite
@@ -92,7 +92,7 @@ jobs:
       DBKIT_TEST_DSN: postgresql+asyncpg://dbkit:dbkit@localhost:5432/dbkit
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v6
       - run: uv python install 3.12
       - run: uv sync --extra dev
       - name: async-only integration + chaos/resilience suite
