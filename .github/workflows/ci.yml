@@ -13,7 +13,7 @@ jobs:
   static:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.12
       - run: uv sync --extra dev
@@ -36,7 +36,7 @@ jobs:
       matrix:
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v3
       - run: uv python install ${{ matrix.python }}
       - run: uv sync --extra dev
@@ -58,7 +58,7 @@ jobs:
     env:
       DBKIT_TEST_DSN: postgresql+psycopg://dbkit:dbkit@localhost:5432/dbkit
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.12
       - run: uv sync --extra dev
@@ -91,7 +91,7 @@ jobs:
     env:
       DBKIT_TEST_DSN: postgresql+asyncpg://dbkit:dbkit@localhost:5432/dbkit
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.12
       - run: uv sync --extra dev
