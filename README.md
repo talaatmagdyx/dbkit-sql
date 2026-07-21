@@ -326,8 +326,9 @@ target = DatabaseTarget(database="app", role="read", shard_key=f"tenant-{tenant_
 Pluggable resolvers (hash / range / directory / callable), replica routing with a
 read-your-writes override (pins reads to the primary for the scope — not lag-aware replica
 tracking), and LRU engine eviction bounded by `max_engines` so a dynamic or unbounded shard-key
-space still keeps a bounded number of live connections. No cross-shard transactions — pair with
-an outbox/saga pattern for multi-shard writes.
+space still keeps a bounded number of live connections. No cross-shard transactions — for
+multi-shard writes pair with a saga; for reliable event publishing on a **single** shard use the
+built-in transactional outbox (`dbkit.integrations`, 0.3).
 
 ### Dynamic registration (0.2)
 
@@ -358,6 +359,8 @@ process-wide connection budget. See the
 | `unnest()` bulk strategy | Array-parameter bulk insert/upsert — ~29× a naive `execute_many` loop |
 | `db.copy_records` | PostgreSQL COPY for the largest ingest jobs |
 | Transactional inbox | Effectively-once consumer processing — dedup and business write share one transaction |
+| Transactional outbox | Reliable event publishing — event row + business write share one transaction, at-least-once relay (`FOR UPDATE SKIP LOCKED`) |
+| Advisory locks | Transaction-scoped `pg_advisory_xact_lock` on a logical key — serialize a read-modify-write without locking rows; auto-released at commit |
 | PgBouncer-compatible pooling | A mode for transaction-pooling PgBouncer deployments |
 | psycopg pipeline mode | A raw escape hatch for pipelined round-trips, opt-in |
 | `PrometheusMetrics` / OTel metrics & tracing | Structured observability, cost measured per adapter |
@@ -443,6 +446,8 @@ dbkit wraps `create_async_engine`/`create_engine`, so migration is incremental, 
 |---|---|
 | See the smallest working consumer | [`quickstart_async.py`](examples/quickstart_async.py) · [`quickstart_sync.py`](examples/quickstart_sync.py) |
 | Use explicit transactions & savepoints | [`transactions_savepoints.py`](examples/transactions_savepoints.py) |
+| Serialize work with advisory locks | [`advisory_locks.py`](examples/advisory_locks.py) |
+| Publish events via the transactional outbox | [`transactional_outbox.py`](examples/transactional_outbox.py) |
 | Handle classified errors | [`error_handling.py`](examples/error_handling.py) |
 | Wire retries + the circuit breaker | [`retries_and_circuit_breaker.py`](examples/retries_and_circuit_breaker.py) |
 | Stream millions of rows | [`streaming.py`](examples/streaming.py) · [`streaming_checkpoint_resume.py`](examples/streaming_checkpoint_resume.py) |
@@ -467,7 +472,7 @@ dbkit/
   _sync/           # generated from _async/ via tools/run_unasync.py — never edited by hand
   observability/   # structured logging, Prometheus, OpenTelemetry metrics/tracing
   postgres/        # COPY, pipeline mode, unnest() bulk strategy — Postgres-only escape hatches
-  integrations/     # transactional inbox (dedup consumer), BatchCollector micro-batching
+  integrations/     # transactional inbox (dedup consumer) + outbox (reliable publish), BatchCollector
   cli/             # config-validate, check, pools, engines, connection-budget, metrics
 ```
 

@@ -17,9 +17,10 @@ consumers, background workers, and CLIs.
 - **Multi-database and sharded.** Named databases, pluggable shard resolvers (hash/range/
   directory/callable), replica routing with a read-your-writes override (pins reads to the
   primary for the scope, not lag-aware replica tracking), and LRU engine eviction for
-  dynamic per-tenant deployments. No cross-shard transaction support — use an outbox/saga
-  pattern for multi-shard writes, and note that dbkit trusts the `DatabaseTarget`/shard key
-  you give it; tenant/shard authorization is your application's responsibility.
+  dynamic per-tenant deployments. No cross-shard transaction support — use a saga for atomic
+  multi-shard writes (a **single-shard** transactional outbox ships in `dbkit.integrations`), and
+  note that dbkit trusts the `DatabaseTarget`/shard key you give it; tenant/shard authorization is
+  your application's responsibility.
 - **Fully observable.** Structured logging, a metrics protocol (Prometheus adapter included),
   and OpenTelemetry tracing — statement text and parameters never reach a log, span, or metric
   label.
