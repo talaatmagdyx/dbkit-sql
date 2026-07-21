@@ -20,10 +20,21 @@ from dbkit.errors import (
     DatabaseResultError,
     DatabaseUniqueViolationError,
 )
+from dbkit.integrations import drain, enqueue, outbox_ddl
 
 from ..conftest import RecordingMetrics
 
 pytestmark = pytest.mark.integration
+
+_OUTBOX = "dbkit_test_outbox"
+
+
+async def _create_outbox(db: AsyncDatabase) -> None:
+    for stmt in outbox_ddl(_OUTBOX).split(";"):
+        if stmt.strip():
+            await db.execute(sql(stmt), target=TARGET)
+    await db.execute(sql(f"TRUNCATE {_OUTBOX}"), target=TARGET)
+
 
 TARGET = DatabaseTarget(database="app", role="write")
 
@@ -430,3 +441,82 @@ async def test_health_and_pool_status(adb: AsyncDatabase) -> None:
     assert report.targets[0].healthy is True
     snaps = adb.pool_status()
     assert snaps and snaps[0].checked_out == 0
+
+
+# --- advisory locks (§11.7) --------------------------------------------------
+
+
+async def test_advisory_xact_lock_is_mutually_exclusive(adb: AsyncDatabase) -> None:
+    """A second transaction cannot take the same advisory key while the first holds it,
+    and CAN once the first transaction ends (the xact lock auto-releases)."""
+    async with adb.transaction(target=TARGET) as tx1:
+        await tx1.advisory_xact_lock("engagement:42")
+        # A concurrent transaction on its own connection is blocked from the same key.
+        async with adb.transaction(target=TARGET) as tx2:
+            assert await tx2.try_advisory_xact_lock("engagement:42") is False
+            # A different key is unaffected.
+            assert await tx2.try_advisory_xact_lock("engagement:99") is True
+    # tx1 committed → the key is free again.
+    async with adb.transaction(target=TARGET) as tx3:
+        assert await tx3.try_advisory_xact_lock("engagement:42") is True
+
+
+async def test_advisory_xact_lock_accepts_int_key(adb: AsyncDatabase) -> None:
+    async with adb.transaction(target=TARGET) as tx:
+        await tx.advisory_xact_lock(123456789)
+        held = await tx.fetch_value(
+            sql("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'")
+        )
+        assert held >= 1
+
+
+# --- transactional outbox (§28.4) --------------------------------------------
+
+
+async def test_outbox_enqueue_and_drain(adb: AsyncDatabase) -> None:
+    await _create_outbox(adb)
+    async with adb.transaction(target=TARGET) as tx:
+        await enqueue(tx, topic="order.completed", payload={"order_id": 7}, table=_OUTBOX)
+
+    published: list[dict] = []
+
+    async def publish(row: dict) -> None:
+        published.append(row)
+
+    relayed = await drain(adb, target=TARGET, publish=publish, table=_OUTBOX)
+    assert relayed == 1
+    assert published[0]["topic"] == "order.completed"
+    assert published[0]["payload"] == {"order_id": 7}
+    # Second drain finds nothing — the row is marked sent.
+    assert await drain(adb, target=TARGET, publish=publish, table=_OUTBOX) == 0
+
+
+async def test_outbox_enqueue_rolls_back_with_transaction(adb: AsyncDatabase) -> None:
+    await _create_outbox(adb)
+    with pytest.raises(RuntimeError):
+        async with adb.transaction(target=TARGET) as tx:
+            await enqueue(tx, topic="t", payload={"x": 1}, table=_OUTBOX)
+            raise RuntimeError("business failure after enqueue")
+    # The event never persisted — atomic with the (rolled-back) business write.
+    count = await adb.fetch_value(sql(f"SELECT count(*) FROM {_OUTBOX}"), target=TARGET)
+    assert count == 0
+
+
+async def test_outbox_drain_retries_on_publish_failure(adb: AsyncDatabase) -> None:
+    await _create_outbox(adb)
+    async with adb.transaction(target=TARGET) as tx:
+        await enqueue(tx, topic="t", payload={"x": 1}, table=_OUTBOX)
+
+    async def failing_publish(row: dict) -> None:
+        raise RuntimeError("broker down")
+
+    with pytest.raises(RuntimeError):
+        await drain(adb, target=TARGET, publish=failing_publish, table=_OUTBOX)
+    # The claim rolled back → the row is still unsent and a later drain delivers it.
+    delivered: list[dict] = []
+
+    async def ok_publish(row: dict) -> None:
+        delivered.append(row)
+
+    assert await drain(adb, target=TARGET, publish=ok_publish, table=_OUTBOX) == 1
+    assert delivered[0]["topic"] == "t"

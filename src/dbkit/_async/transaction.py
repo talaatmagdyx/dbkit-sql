@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .._core.errors import (
     DatabaseCommitUnknownError,
+    DatabaseUnsupportedOperationError,
     classify,
     is_connection_error,
 )
@@ -62,6 +63,53 @@ class AsyncTransactionScope(AsyncConnectionScope):
             raise
         else:
             await nested.commit()
+
+    async def advisory_xact_lock(self, key: int | str) -> None:
+        """Acquire a transaction-scoped PostgreSQL advisory lock, blocking until granted (§11.7).
+
+        The lock is held for the remainder of THIS transaction and released automatically on
+        ``COMMIT``/``ROLLBACK`` — there is no manual unlock, so it can never leak. It serializes
+        transactions that lock the same ``key``: a second locker of the same key blocks until the
+        first transaction ends. Nothing else is blocked (advisory locks are cooperative — they only
+        guard code paths that agree to take the same lock), so it is the tool for serializing a
+        read-modify-write on a logical entity without locking its rows.
+
+        ``key`` is either a 64-bit ``int`` (used directly as the lock key) or a ``str`` (hashed to a
+        ``bigint`` server-side via ``hashtextextended(key, 0)``). It is always passed as a bound
+        parameter — never string-interpolated.
+
+        The wait respects the transaction's ``lock_timeout`` (set via
+        :meth:`~dbkit.AsyncDatabase.transaction`'s ``lock_timeout=`` argument): a wait that exceeds
+        it raises :class:`~dbkit.errors.DatabaseLockTimeoutError` (retryable). PostgreSQL only;
+        raises :class:`~dbkit.errors.DatabaseUnsupportedOperationError` otherwise.
+        """
+        await self._advisory_lock("pg_advisory_xact_lock", key, name="advisory_xact_lock")
+
+    async def try_advisory_xact_lock(self, key: int | str) -> bool:
+        """Try to take a transaction-scoped advisory lock without blocking (§11.7).
+
+        Returns ``True`` if the lock was granted (held until this transaction ends), ``False`` if
+        another transaction already holds it. Never waits, so ``lock_timeout`` does not apply — use
+        this to fail fast (e.g. skip work another worker is already doing) instead of queuing.
+        ``key`` and dialect rules match :meth:`advisory_xact_lock`.
+        """
+        result = await self._advisory_lock(
+            "pg_try_advisory_xact_lock", key, name="try_advisory_xact_lock"
+        )
+        return bool(result)
+
+    async def _advisory_lock(self, func: str, key: int | str, *, name: str) -> Any:
+        """Run one advisory-lock function (``func`` is an internal literal, ``key`` is bound)."""
+        if not self._is_postgres:
+            raise DatabaseUnsupportedOperationError("advisory locks require PostgreSQL")
+        arg = "hashtextextended(:key, 0)" if isinstance(key, str) else ":key"
+        try:
+            cursor = await self._conn.execute(text(f"SELECT {func}({arg})"), {"key": key})
+            return cursor.scalar()
+        except Exception as exc:
+            raise classify(
+                exc, query_name=name, database_name=self._database, role=self._role
+            ) from exc
 
 
 class _AsyncTransactionManager:

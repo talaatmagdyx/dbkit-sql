@@ -186,3 +186,14 @@ def test_sync_health(sdb: Database) -> None:
     report = sdb.health()
     assert report.ready is True
     assert sdb.pool_status()[0].checked_out == 0
+
+
+def test_sync_advisory_xact_lock_is_mutually_exclusive(sdb: Database) -> None:
+    """Advisory-lock parity on the generated sync frontend (§11.7)."""
+    with sdb.transaction(target=TARGET) as tx1:
+        tx1.advisory_xact_lock("engagement:7")
+        with sdb.transaction(target=TARGET) as tx2:
+            assert tx2.try_advisory_xact_lock("engagement:7") is False
+            assert tx2.try_advisory_xact_lock("engagement:8") is True
+    with sdb.transaction(target=TARGET) as tx3:
+        assert tx3.try_advisory_xact_lock("engagement:7") is True

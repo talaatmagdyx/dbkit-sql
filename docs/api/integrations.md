@@ -14,6 +14,36 @@ wires these into its own consumer loop.
 
 ::: dbkit.integrations.ack_after_commit
 
+## Transactional outbox (§28.4)
+
+The mirror of the inbox: enqueue an event **in the same transaction as the business write** so the
+event exists iff the change persisted, then relay unsent rows to a broker at-least-once. Single-shard
+(the outbox table lives on the same database as the write); pair with the inbox on the consumer for
+effectively-once. Schema-agnostic — you pass the table name and an opaque JSON payload.
+
+```python
+from dbkit.integrations import outbox_ddl, enqueue, drain
+
+await db.execute(sql(outbox_ddl()), target=t)   # once, at setup (script: split on ';')
+
+async with db.transaction(target=t) as tx:       # atomic: write + event
+    await tx.execute(UPDATE_ORDER, params)
+    await enqueue(tx, topic="order.completed", payload={"order_id": oid})
+
+# relay loop (separate worker): publish unsent rows, mark them sent
+await drain(db, target=t, publish=my_async_publish)
+```
+
+::: dbkit.integrations.outbox_ddl
+
+::: dbkit.integrations.partitioned_outbox_ddl
+
+::: dbkit.integrations.outbox_month_partition_ddl
+
+::: dbkit.integrations.enqueue
+
+::: dbkit.integrations.drain
+
 ::: dbkit.integrations.BatchCollector
 
 ## HTTP APIs (FastAPI / Starlette)
