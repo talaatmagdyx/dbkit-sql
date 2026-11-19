@@ -83,3 +83,27 @@ def test_log_event_payload_has_no_secrets(caplog: pytest.LogCaptureFixture) -> N
         log_event(logging.INFO, "database.query.completed", query_name="auth.login", rows=1)
     # query *name* is fine to log; there is no parameter/DSN content in the event.
     assert SECRET not in caplog.text
+
+
+def test_config_repr_never_contains_dsn_password() -> None:
+    cfg = DbkitConfig.from_dict({"databases": {"app": {"primary": {"url": DSN}}}})
+    for obj in (cfg, cfg.databases["app"], cfg.databases["app"].primary):
+        assert SECRET not in repr(obj)
+        assert SECRET not in str(obj)
+    assert cfg.databases["app"].primary.url == DSN  # the real URL is still there for the engine
+
+
+def test_engine_creation_error_never_contains_dsn_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dbkit._async.engine as engine_module
+    from dbkit.errors import DatabaseConfigurationError
+
+    def boom(url: str, **_: object) -> None:
+        raise ValueError(f"cannot parse {url}")  # a driver error that echoes the URL
+
+    monkeypatch.setattr(engine_module, "create_async_engine", boom)
+    cfg = DbkitConfig.from_dict({"databases": {"app": {"primary": {"url": DSN}}}})
+    registry = engine_module.AsyncEngineRegistry.__new__(engine_module.AsyncEngineRegistry)
+    registry._config = cfg  # type: ignore[attr-defined]
+    with pytest.raises(DatabaseConfigurationError) as caught:
+        registry._build_engine(cfg.databases["app"].primary)
+    assert SECRET not in str(caught.value)

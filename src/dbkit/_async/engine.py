@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from .._core.config import DbkitConfig, PoolConfig, TargetConfig
 from .._core.errors import DatabaseConfigurationError, DatabaseRoutingError
+from .._core.errors.redaction import sanitize_message
 from .._core.keys import EngineKey
 from .._core.routing import ResolvedRoute
 from .._pool import PoolInstrumentation, PoolSnapshot
@@ -137,8 +138,8 @@ class AsyncEngineRegistry:
             return create_async_engine(target.url, **kwargs)
         except Exception as exc:
             raise DatabaseConfigurationError(
-                f"failed to create engine for {target.name!r}: {exc}"
-            ) from exc
+                f"failed to create engine for {target.name!r}: {sanitize_message(str(exc))}"
+            ) from None  # the driver error can echo the URL, password included (§30)
 
     async def get(self, route: ResolvedRoute) -> EngineEntry:
         """The cached engine for ``route``, creating (and, if needed, evicting) one lazily."""

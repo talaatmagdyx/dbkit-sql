@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **Config reprs no longer print DSN passwords.** `TargetConfig.__repr__` redacts its URL, so `repr()` of a
+  `TargetConfig`, `DatabaseConfig` or `DbkitConfig` (which reach logs, tracebacks and error reporters) never shows
+  the password; the URL itself is unchanged for the engine (§30).
+- **Engine-creation errors are sanitized.** A driver error that echoes the URL is passed through `sanitize_message`
+  and no longer chained, sync and async (§30).
+- **Cancellation during COMMIT propagates.** An `asyncio.CancelledError` raised while COMMIT is in flight is
+  re-raised unchanged instead of being reclassified as a generic error after a pointless rollback; it is counted as
+  `commit_unknown`, because the COMMIT may have landed (§15).
+
 ## [0.3.0] - 2026-07-21
 
 ### Added
