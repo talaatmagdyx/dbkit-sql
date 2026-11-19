@@ -229,8 +229,10 @@ class _TransactionManager:
             except DatabaseCommitUnknownError:
                 outcome = "commit_unknown"
                 raise
-            except BaseException:
-                outcome = "rollback"  # _commit() already attempted an internal rollback
+            except BaseException as commit_exc:
+                # Cancelled during COMMIT: the outcome is not known. Otherwise _commit() already
+                # attempted an internal rollback.
+                outcome = "commit_unknown" if is_cancellation(commit_exc) else "rollback"
                 raise
             return False
         finally:
@@ -258,6 +260,10 @@ class _TransactionManager:
         try:
             self._trans.commit()
         except BaseException as commit_exc:
+            if is_cancellation(commit_exc):
+                # The COMMIT may or may not have landed. Cancellation propagates unchanged; a
+                # rollback on this connection would prove nothing. The pool discards it.
+                raise
             # A failure during COMMIT may mean the transaction committed anyway (§15).
             if is_connection_error(commit_exc):
                 raise DatabaseCommitUnknownError(
