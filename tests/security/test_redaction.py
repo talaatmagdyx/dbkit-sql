@@ -202,3 +202,37 @@ def test_redaction_time_stays_bounded_on_hostile_messages(hostile: str) -> None:
     sanitize_message(hostile)
     redact_dsn(hostile[:20_000])  # config values are not capped; the bounded patterns must hold
     assert time.perf_counter() - start < 1.0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"host=db password=ab,{SECRET} dbname=app",  # ',' and '}' are ordinary in a keyword value
+        f"host=db password=ab}}{SECRET} dbname=app",
+        f"PGPASSWORD=ab,{SECRET} psql",
+        f"https://h/x?db_password={SECRET}",  # any query key containing "password"
+        f"https://h/x?a=1&PGPASSWORD={SECRET}",
+        f"postgresql+psycopg://app@db/app?%70assword={SECRET}",  # SQLAlchemy decodes the key
+        "password=" + "A" * 1100 + SECRET,  # longer than any bound: redacted whole
+        "password='" + "A" * 1100 + f" {SECRET}'",
+        "connect postgresql://app:" + "A" * 1100 + f"{SECRET}@db/x",
+    ],
+)
+def test_more_password_spellings_and_long_values_are_redacted(text: str) -> None:
+    from dbkit._core.errors.redaction import sanitize_message
+
+    assert SECRET not in sanitize_message(text)
+
+
+def test_a_password_cut_by_the_message_cap_is_still_redacted() -> None:
+    from dbkit._core.errors.redaction import _MAX_MESSAGE, sanitize_message
+
+    for pad in range(_MAX_MESSAGE - 40, _MAX_MESSAGE - 10):
+        out = sanitize_message("x" * pad + f" postgresql://app:{SECRET}@db/app trailing")
+        assert SECRET[:6] not in out and out.endswith("...(truncated)")
+
+
+def test_ordinary_query_parameters_are_left_alone() -> None:
+    from dbkit._core.errors.redaction import sanitize_message
+
+    assert sanitize_message("GET /x?page=2&sort=name") == "GET /x?page=2&sort=name"
