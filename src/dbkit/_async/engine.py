@@ -137,9 +137,10 @@ class AsyncEngineRegistry:
         try:
             return create_async_engine(target.url, **kwargs)
         except Exception as exc:
-            raise DatabaseConfigurationError(
-                f"failed to create engine for {target.name!r}: {sanitize_message(str(exc))}"
-            ) from None  # the driver error can echo the URL, password included (§30)
+            reason = sanitize_message(str(exc))
+        # Raised outside the except block, so the driver error (which can echo the URL, password
+        # included) is not even kept as __context__ (§30).
+        raise DatabaseConfigurationError(f"failed to create engine for {target.name!r}: {reason}")
 
     async def get(self, route: ResolvedRoute) -> EngineEntry:
         """The cached engine for ``route``, creating (and, if needed, evicting) one lazily."""

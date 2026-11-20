@@ -107,3 +107,65 @@ def test_engine_creation_error_never_contains_dsn_password(monkeypatch: pytest.M
     with pytest.raises(DatabaseConfigurationError) as caught:
         registry._build_engine(cfg.databases["app"].primary)
     assert SECRET not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"postgresql+psycopg://app@db/app?password={SECRET}",
+        f"postgresql+psycopg://app@db/app?sslmode=require&sslpassword={SECRET}",
+        f"postgresql+psycopg://app:ab/{SECRET}+ef==@db/app",  # base64 secrets often contain '/'
+        f"postgresql+psycopg://:{SECRET}@db/app",  # password-only userinfo
+        f"postgresql+psycopg://app:{SECRET.replace('-', '%2F')}@db/app",  # percent-encoded
+    ],
+)
+def test_every_password_form_is_redacted_in_config_and_messages(url: str) -> None:
+    from dbkit._core.config import TargetConfig
+    from dbkit._core.errors.redaction import sanitize_message
+
+    secret = SECRET.replace("-", "%2F") if "%2F" in url else SECRET
+    assert secret not in repr(TargetConfig(url=url))
+    assert secret not in sanitize_message(f"could not connect to {url}: timeout")
+
+
+def test_free_text_password_with_spaces_and_keyword_dsn_are_redacted() -> None:
+    from dbkit._core.errors.redaction import sanitize_message
+
+    assert "pa ss" not in sanitize_message("x postgresql://u:pa ss@h/d failed")
+    assert SECRET not in sanitize_message(f"host=db user=app password={SECRET} dbname=app")
+    assert SECRET not in sanitize_message(f"host=db password='{SECRET} x' dbname=app")
+
+
+def test_redaction_keeps_host_port_and_database_readable() -> None:
+    from dbkit._core.errors.redaction import sanitize_message
+
+    message = "could not connect to postgresql://db.internal:5432/app: connection refused"
+    assert sanitize_message(message) == message
+
+
+def test_engine_creation_error_keeps_no_secret_in_its_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import traceback
+
+    from dbkit._async import engine as async_engine
+    from dbkit._sync import engine as sync_engine
+    from dbkit.errors import DatabaseConfigurationError
+
+    def boom(url: str, **_: object) -> None:
+        raise ValueError(f"cannot parse {url}")
+
+    cases = (
+        (async_engine, "create_async_engine", async_engine.AsyncEngineRegistry),
+        (sync_engine, "create_engine", sync_engine.EngineRegistry),
+    )
+    for module, factory, registry_cls in cases:
+        monkeypatch.setattr(module, factory, boom)
+        cfg = DbkitConfig.from_dict({"databases": {"app": {"primary": {"url": DSN}}}})
+        registry = registry_cls.__new__(registry_cls)
+        registry._config = cfg  # type: ignore[attr-defined]
+        with pytest.raises(DatabaseConfigurationError) as caught:
+            registry._build_engine(cfg.databases["app"].primary)
+        err = caught.value
+        assert err.__context__ is None and err.__cause__ is None
+        assert SECRET not in "".join(traceback.format_exception(err))
