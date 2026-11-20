@@ -14,8 +14,16 @@ from urllib.parse import urlsplit, urlunsplit
 
 REDACTED = "***"
 
-# postgresql+psycopg://user:secret@host:5432/db  ->  redact the password component.
-_DSN_RE = re.compile(r"(?P<pre>[a-z0-9+]+://[^:/\s]+:)(?P<pw>[^@/\s]+)(?P<post>@)", re.IGNORECASE)
+# postgresql+psycopg://user:secret@host:5432/db  ->  redact the password component. As in
+# SQLAlchemy's URL parser, the password runs from the ':' after the (possibly empty) user name to
+# the next '@', so it may contain '/', '+', '=' or spaces; it stops at a line end.
+_DSN_RE = re.compile(
+    r"(?P<pre>[a-z][a-z0-9+.\-]*://[^:/@\s]*:)(?P<pw>[^@\n]*?)(?P<post>@)", re.IGNORECASE
+)
+# password=... / sslpassword=... in a URL query string or a libpq keyword DSN, quoted or not.
+_KEYWORD_RE = re.compile(
+    r"(?P<pre>\b(?:ssl)?password\s*=\s*)(?P<pw>'(?:[^'\\]|\\.)*'|[^\s&#]+)", re.IGNORECASE
+)
 
 # Common secret-ish/PII key fragments; redacted from parameter maps unless caller opts out.
 # This list is deliberately conservative and documented (not just here — see
@@ -52,6 +60,7 @@ _SENSITIVE_KEY_HINTS = (
 def redact_dsn(value: str) -> str:
     """Redact the password in a URL/DSN while keeping it recognizable for debugging."""
     redacted = _DSN_RE.sub(rf"\g<pre>{REDACTED}\g<post>", value)
+    redacted = _KEYWORD_RE.sub(rf"\g<pre>{REDACTED}", redacted)
     # If urlsplit disagrees (e.g. odd formatting), fall back to a full rebuild.
     try:
         parts = urlsplit(redacted)
