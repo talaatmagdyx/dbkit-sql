@@ -80,3 +80,15 @@ def shield_from_cancellation(result: T) -> T:
     has already run to completion (mirrors ``_async/_compat.py``'s real ``asyncio.shield``-based
     version, which the async build genuinely needs)."""
     return result
+
+
+def invalidate_after_interrupted_commit(conn: Any, original: BaseException) -> None:
+    """Drop a connection whose COMMIT was interrupted (outcome unknown) from the pool.
+
+    A failure while invalidating is noted on ``original`` (which the caller re-raises). A
+    KeyboardInterrupt or SystemExit raised while invalidating outranks the original interruption
+    and propagates, chained to it."""
+    try:
+        conn.invalidate()
+    except Exception as second:
+        original.add_note(f"dbkit: invalidating the connection was cut short ({type(second).__name__})")

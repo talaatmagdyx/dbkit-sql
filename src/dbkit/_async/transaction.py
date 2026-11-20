@@ -25,7 +25,7 @@ from .._core.errors import (
 from ..observability import logging as obslog
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink, NoopMetrics
-from ._compat import is_cancellation, shield_from_cancellation
+from ._compat import invalidate_after_interrupted_commit, is_cancellation, shield_from_cancellation
 from .connection import AsyncConnectionScope, apply_statement_timeout_sql
 
 
@@ -262,9 +262,7 @@ class _AsyncTransactionManager:
                 # it may or may not have landed. A rollback would prove nothing; the connection's
                 # state is unknown, so it is invalidated (never reused), then the interruption
                 # propagates unchanged.
-                # A second interruption while invalidating is absorbed: the original propagates.
-                with contextlib.suppress(BaseException):
-                    await shield_from_cancellation(self._conn.invalidate())  # type: ignore[union-attr]
+                await invalidate_after_interrupted_commit(self._conn, commit_exc)
                 raise commit_exc
             # A failure during COMMIT may mean the transaction committed anyway (§15).
             if is_connection_error(commit_exc):

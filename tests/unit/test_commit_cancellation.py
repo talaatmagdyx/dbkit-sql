@@ -161,19 +161,19 @@ async def test_auto_commit_success_is_unchanged() -> None:
     assert conn.calls == ["commit", "close"]
 
 
-async def test_a_second_cancellation_while_invalidating_still_counts_and_finishes_invalidate() -> (
-    None
-):
-    """(KeyboardInterrupt inside an asyncio task escapes the event loop itself, so the original is a
-    cancellation here; the sync path covers KeyboardInterrupt and SystemExit.)"""
-    release = asyncio.Event()
+async def test_a_second_cancellation_while_invalidating_keeps_the_original_and_finishes() -> None:
+    """(A KeyboardInterrupt inside an asyncio task escapes the event loop itself, so the original
+    here is a cancellation; the sync tests cover KeyboardInterrupt and SystemExit.)"""
+    release, finished = asyncio.Event(), []
 
     class _SlowInvalidate(_Conn):
         async def invalidate(self) -> None:
             self.calls.append("invalidate")
             await release.wait()
+            finished.append(True)
 
-    conn, metrics = _SlowInvalidate(asyncio.CancelledError()), _Metrics()
+    first = asyncio.CancelledError("first")
+    conn, metrics = _SlowInvalidate(first), _Metrics()
 
     async def run() -> None:
         async with _executor(conn, metrics).scope(
@@ -182,14 +182,50 @@ async def test_a_second_cancellation_while_invalidating_still_counts_and_finishe
             pass
 
     task = asyncio.create_task(run())
-    while "invalidate" not in conn.calls:
-        await asyncio.sleep(0)
+    async with asyncio.timeout(1):
+        while "invalidate" not in conn.calls:
+            await asyncio.sleep(0)
     task.cancel()  # a second interruption, while the shielded invalidate is running
     await asyncio.sleep(0)
     release.set()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError) as caught:
         await task
-    assert metrics.counts.get(m.COMMIT_UNKNOWN) == 1  # counted before the invalidate, so never lost
+    assert caught.value is first and finished == [True]
+    assert metrics.counts.get(m.COMMIT_UNKNOWN) == 1  # counted before the invalidate
+    assert any("cut short" in note for note in getattr(first, "__notes__", []))
+
+
+async def test_transaction_second_cancellation_while_invalidating_keeps_the_original() -> None:
+    release = asyncio.Event()
+
+    class _SlowInvalidate(_Conn):
+        async def invalidate(self) -> None:
+            self.calls.append("invalidate")
+            await release.wait()
+
+    first = asyncio.CancelledError("first")
+    conn, metrics = _SlowInvalidate(first), _Metrics()
+    task = asyncio.create_task(_async_tx(conn, metrics).__aexit__(None, None, None))
+    async with asyncio.timeout(1):
+        while "invalidate" not in conn.calls:
+            await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    assert caught.value is first and metrics.counts.get(m.COMMIT_UNKNOWN) == 1
+
+
+async def test_a_failing_invalidate_is_noted_on_the_original_interruption() -> None:
+    class _BrokenInvalidate(_Conn):
+        async def invalidate(self) -> None:
+            raise RuntimeError("socket already closed")
+
+    first = asyncio.CancelledError("first")
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await _async_tx(_BrokenInvalidate(first), _Metrics()).__aexit__(None, None, None)
+    assert caught.value is first and any("RuntimeError" in n for n in first.__notes__)
 
 
 @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
@@ -227,3 +263,59 @@ def test_sync_auto_commit_interrupted_propagates_unchanged_and_invalidates(
         pass
     assert "rollback" not in conn.calls and "invalidate" in conn.calls
     assert metrics.counts.get(m.COMMIT_UNKNOWN) == 1
+
+
+def _sync_executor(conn: _SyncConn, metrics: _Metrics) -> Any:
+    from dbkit._sync.executor import ResilientExecutor as SyncExecutor
+
+    ex = SyncExecutor.__new__(SyncExecutor)
+    entry = SimpleNamespace(
+        key=SimpleNamespace(database="db", shard_id=None, role="write"), engine=None
+    )
+
+    @contextlib.contextmanager
+    def span(*_: Any, **__: Any) -> Any:
+        yield SimpleNamespace(set_attribute=lambda *a: None)
+
+    ex.entry = lambda _: (entry, None)
+    ex.acquire = lambda *_: conn
+    ex.query_meta = lambda q: ("q", "execute", None)
+    ex.labels = lambda *a: {}
+    ex.is_postgres = lambda e: False
+    ex._tracer = SimpleNamespace(span=span)
+    ex._metrics = metrics
+    ex._config = SimpleNamespace(
+        defaults=SimpleNamespace(
+            query_timeout_seconds=1.0, observability=SimpleNamespace(slow_query_ms=1e9)
+        )
+    )
+    return ex
+
+
+class _ExitingInvalidate(_SyncConn):
+    def invalidate(self) -> None:
+        self.calls.append("invalidate")
+        raise SystemExit(143)
+
+
+def test_sync_exit_while_invalidating_outranks_the_first_interrupt_and_keeps_its_code() -> None:
+    conn, metrics = _ExitingInvalidate(KeyboardInterrupt()), _Metrics()
+    with pytest.raises(SystemExit) as caught:
+        with _sync_executor(conn, metrics).scope(
+            SimpleNamespace(), None, call_timeout=None, deadline=None, commit=True
+        ):
+            pass
+    assert caught.value.code == 143 and isinstance(caught.value.__context__, KeyboardInterrupt)
+    assert metrics.counts.get(m.COMMIT_UNKNOWN) == 1
+
+
+def test_sync_transaction_exit_while_invalidating_outranks_the_first_interrupt() -> None:
+    conn, metrics = _ExitingInvalidate(KeyboardInterrupt()), _Metrics()
+    tx = _TransactionManager.__new__(_TransactionManager)
+    tx._conn, tx._trans = conn, conn  # type: ignore[assignment]
+    tx._database, tx._shard_id, tx._role, tx._query_name = "db", "s", "write", None
+    tx._metrics, tx._labels, tx._span = metrics, {}, None  # type: ignore[assignment]
+    tx._started_at, tx._long_transaction_warning = 0.0, float("inf")
+    with pytest.raises(SystemExit) as caught:
+        tx.__exit__(None, None, None)
+    assert caught.value.code == 143 and metrics.counts.get(m.COMMIT_UNKNOWN) == 1

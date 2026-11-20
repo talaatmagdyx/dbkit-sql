@@ -34,7 +34,7 @@ from ..observability import logging as obslog
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink
 from ..observability.tracing import Tracer
-from ._compat import API_LABEL, shield_from_cancellation
+from ._compat import API_LABEL, invalidate_after_interrupted_commit
 from .connection import AsyncConnectionScope
 from .engine import AsyncEngineRegistry, EngineEntry
 from .resilience import ConcurrencyLimiter, run_with_retries
@@ -287,11 +287,8 @@ class ResilientExecutor:
                             # Interrupted during COMMIT (cancellation, KeyboardInterrupt,
                             # SystemExit): the outcome is unknown. No rollback; the connection is
                             # invalidated, never reused; the interruption propagates unchanged.
-                            # Counted first; a second interruption while invalidating is absorbed,
-                            # so the original one is what propagates.
-                            self._metrics.incr(m.COMMIT_UNKNOWN, labels=labels)
-                            with contextlib.suppress(BaseException):
-                                await shield_from_cancellation(conn.invalidate())
+                            self._metrics.incr(m.COMMIT_UNKNOWN, labels=labels)  # counted first
+                            await invalidate_after_interrupted_commit(conn, commit_exc)
                             raise commit_exc
                         # Mirror _AsyncTransactionManager._commit(): a failure during COMMIT
                         # may mean the write committed anyway (§15) — never silently swallow
