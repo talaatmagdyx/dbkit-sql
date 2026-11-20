@@ -192,7 +192,7 @@ async def test_a_second_cancellation_while_invalidating_keeps_the_original_and_f
         await task
     assert caught.value is first and finished == [True]
     assert metrics.counts.get(m.COMMIT_UNKNOWN) == 1  # counted before the invalidate
-    assert any("cut short" in note for note in getattr(first, "__notes__", []))
+    assert any("the invalidate finished" in note for note in getattr(first, "__notes__", []))
 
 
 async def test_transaction_second_cancellation_while_invalidating_keeps_the_original() -> None:
@@ -225,7 +225,8 @@ async def test_a_failing_invalidate_is_noted_on_the_original_interruption() -> N
     first = asyncio.CancelledError("first")
     with pytest.raises(asyncio.CancelledError) as caught:
         await _async_tx(_BrokenInvalidate(first), _Metrics()).__aexit__(None, None, None)
-    assert caught.value is first and any("RuntimeError" in n for n in first.__notes__)
+    assert caught.value is first
+    assert any("RuntimeError" in n and "did not finish" in n for n in first.__notes__)
 
 
 @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
@@ -319,3 +320,32 @@ def test_sync_transaction_exit_while_invalidating_outranks_the_first_interrupt()
     with pytest.raises(SystemExit) as caught:
         tx.__exit__(None, None, None)
     assert caught.value.code == 143 and metrics.counts.get(m.COMMIT_UNKNOWN) == 1
+
+
+class _BrokenSyncInvalidate(_SyncConn):
+    def invalidate(self) -> None:
+        self.calls.append("invalidate")
+        raise RuntimeError("socket already closed")
+
+
+def test_sync_failing_invalidate_is_noted_and_the_original_propagates() -> None:
+    first = KeyboardInterrupt()
+    conn, metrics = _BrokenSyncInvalidate(first), _Metrics()
+    with pytest.raises(KeyboardInterrupt) as caught:
+        with _sync_executor(conn, metrics).scope(
+            SimpleNamespace(), None, call_timeout=None, deadline=None, commit=True
+        ):
+            pass
+    assert caught.value is first and metrics.counts.get(m.COMMIT_UNKNOWN) == 1
+    assert any("RuntimeError" in n and "did not finish" in n for n in first.__notes__)
+
+    first2 = KeyboardInterrupt()
+    conn2, metrics2 = _BrokenSyncInvalidate(first2), _Metrics()
+    tx = _TransactionManager.__new__(_TransactionManager)
+    tx._conn, tx._trans = conn2, conn2  # type: ignore[assignment]
+    tx._database, tx._shard_id, tx._role, tx._query_name = "db", "s", "write", None
+    tx._metrics, tx._labels, tx._span = metrics2, {}, None  # type: ignore[assignment]
+    tx._started_at, tx._long_transaction_warning = 0.0, float("inf")
+    with pytest.raises(KeyboardInterrupt) as caught2:
+        tx.__exit__(None, None, None)
+    assert caught2.value is first2 and metrics2.counts.get(m.COMMIT_UNKNOWN) == 1

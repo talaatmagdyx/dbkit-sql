@@ -91,4 +91,7 @@ def invalidate_after_interrupted_commit(conn: Any, original: BaseException) -> N
     try:
         conn.invalidate()
     except Exception as second:
-        original.add_note(f"dbkit: invalidating the connection was cut short ({type(second).__name__})")
+        original.add_note(
+            f"dbkit: {type(second).__name__} while invalidating the connection; "
+            "the invalidate did not finish"
+        )
