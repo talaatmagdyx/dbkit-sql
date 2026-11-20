@@ -290,10 +290,12 @@ class ResilientExecutor:
                             # Interrupted during COMMIT (cancellation, KeyboardInterrupt,
                             # SystemExit): the outcome is unknown. No rollback; the connection is
                             # invalidated, never reused; the interruption propagates unchanged.
-                            with contextlib.suppress(Exception):
-                                shield_from_cancellation(conn.invalidate())
+                            # Counted first; a second interruption while invalidating is absorbed,
+                            # so the original one is what propagates.
                             self._metrics.incr(m.COMMIT_UNKNOWN, labels=labels)
-                            raise
+                            with contextlib.suppress(BaseException):
+                                shield_from_cancellation(conn.invalidate())
+                            raise commit_exc
                         # Mirror _TransactionManager._commit(): a failure during COMMIT
                         # may mean the write committed anyway (§15) — never silently swallow
                         # that ambiguity, and never leave the exception unclassified either
