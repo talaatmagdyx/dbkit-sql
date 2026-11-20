@@ -236,3 +236,66 @@ def test_ordinary_query_parameters_are_left_alone() -> None:
     from dbkit._core.errors.redaction import sanitize_message
 
     assert sanitize_message("GET /x?page=2&sort=name") == "GET /x?page=2&sort=name"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"password: {SECRET}",  # unquoted key with ':'
+        f'PGPASSWORD="ab {SECRET}" psql',  # double-quoted '=' value with a space
+        f'"password"="{SECRET}"',  # quoted key with '='
+        f"'password' = '{SECRET}'",
+        f"GET /login?next=/cb?password={SECRET}",  # nested query
+        f"?a=b?db_password={SECRET}",
+        f'Cfg(password="o\'b {SECRET}")',  # repr double-quotes a value containing a quote
+        f"line 3: password: {SECRET}",
+        f"DB_PASSWORD : {SECRET}",
+        f"redirect https://app/cb?next=/login?password={SECRET}",
+    ],
+)
+def test_round4_spellings_are_redacted(text: str) -> None:
+    from dbkit._core.errors.redaction import sanitize_message
+
+    assert SECRET not in sanitize_message(text)
+
+
+def test_text_past_the_cap_never_reaches_the_output() -> None:
+    from dbkit._core.errors.redaction import _MAX_MESSAGE, sanitize_message
+
+    # A shrinking redaction early in the message must not pull a later DSN password into view.
+    msg = "password=" + "A" * 6000 + " " + "x" * 7328 + f" postgresql://app:{SECRET}@db/app"
+    out = sanitize_message(msg)
+    assert SECRET not in out and len(out) <= _MAX_MESSAGE + len(" ...(truncated)")
+
+
+def test_redaction_time_stays_bounded_on_long_scheme_runs() -> None:
+    import time
+
+    from dbkit._core.errors.redaction import redact_dsn, sanitize_message
+
+    hostile = ("a" * 32 + "://:") * 50_000
+    start = time.perf_counter()
+    sanitize_message(hostile)
+    redact_dsn(hostile[:20_000])
+    assert time.perf_counter() - start < 1.0
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "could not connect to postgresql://db.internal:5432/app for ops@corp.example",
+        "postgresql://db:5432 refused; contact dba@example.com",
+        "postgresql://db:5432/app?sslmode=require failed for app@db",
+    ],
+)
+def test_a_password_less_url_stays_readable_before_an_unrelated_at(message: str) -> None:
+    from dbkit._core.errors.redaction import sanitize_message
+
+    assert sanitize_message(message) == message
+
+
+def test_a_numeric_looking_password_is_still_redacted() -> None:
+    from dbkit._core.errors.redaction import sanitize_message
+
+    assert "5432x" not in sanitize_message("postgresql://app:5432x@db/app failed")
+    assert "1234/abc" not in sanitize_message("postgresql://app:1234/abc@db/app failed")
