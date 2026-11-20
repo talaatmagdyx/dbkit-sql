@@ -1,5 +1,8 @@
 """Cancellation during a real COMMIT, on PostgreSQL: it propagates unchanged and the connection,
-whose transaction outcome is unknown, is invalidated (its backend goes away), not reused."""
+whose transaction outcome is unknown, is invalidated (its backend goes away), not reused.
+
+This checks the end-to-end result. SQLAlchemy also invalidates a connection on such exceptions, so
+dbkit's own explicit invalidate is pinned by the unit tests in tests/unit/test_commit_cancellation.py."""
 
 from __future__ import annotations
 

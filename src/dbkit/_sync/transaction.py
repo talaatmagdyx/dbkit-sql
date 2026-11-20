@@ -265,9 +265,10 @@ class _TransactionManager:
                 # it may or may not have landed. A rollback would prove nothing; the connection's
                 # state is unknown, so it is invalidated (never reused), then the interruption
                 # propagates unchanged.
-                with contextlib.suppress(Exception):
+                # A second interruption while invalidating is absorbed: the original propagates.
+                with contextlib.suppress(BaseException):
                     shield_from_cancellation(self._conn.invalidate())  # type: ignore[union-attr]
-                raise
+                raise commit_exc
             # A failure during COMMIT may mean the transaction committed anyway (§15).
             if is_connection_error(commit_exc):
                 raise DatabaseCommitUnknownError(

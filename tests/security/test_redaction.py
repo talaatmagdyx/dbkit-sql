@@ -169,3 +169,36 @@ def test_engine_creation_error_keeps_no_secret_in_its_chain(
         err = caught.value
         assert err.__context__ is None and err.__cause__ is None
         assert SECRET not in "".join(traceback.format_exception(err))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"host=db password=ab#{SECRET} dbname=app",  # '#' and '&' are ordinary in a keyword DSN
+        f"host=db password=ab&{SECRET} dbname=app",
+        f"postgresql+psycopg://app@db/app?password=ab#{SECRET}",  # SQLAlchemy keeps the '#' part
+        f"PGPASSWORD={SECRET} psql",
+        f"db_password={SECRET}",
+        f"{{'password': '{SECRET}'}}",
+        f'{{"password":"{SECRET}"}}',
+    ],
+)
+def test_other_password_spellings_are_redacted(text: str) -> None:
+    from dbkit._core.errors.redaction import sanitize_message
+
+    assert SECRET not in sanitize_message(text)
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["a://:" * 200_000, "a" * 1_000_000, "password='" * 100_000, "x" + "a.b-c" * 200_000 + "://"],
+)
+def test_redaction_time_stays_bounded_on_hostile_messages(hostile: str) -> None:
+    import time
+
+    from dbkit._core.errors.redaction import redact_dsn, sanitize_message
+
+    start = time.perf_counter()
+    sanitize_message(hostile)
+    redact_dsn(hostile[:20_000])  # config values are not capped; the bounded patterns must hold
+    assert time.perf_counter() - start < 1.0

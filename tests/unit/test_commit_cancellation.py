@@ -159,3 +159,71 @@ async def test_auto_commit_success_is_unchanged() -> None:
     ):
         pass
     assert conn.calls == ["commit", "close"]
+
+
+async def test_a_second_cancellation_while_invalidating_still_counts_and_finishes_invalidate() -> (
+    None
+):
+    """(KeyboardInterrupt inside an asyncio task escapes the event loop itself, so the original is a
+    cancellation here; the sync path covers KeyboardInterrupt and SystemExit.)"""
+    release = asyncio.Event()
+
+    class _SlowInvalidate(_Conn):
+        async def invalidate(self) -> None:
+            self.calls.append("invalidate")
+            await release.wait()
+
+    conn, metrics = _SlowInvalidate(asyncio.CancelledError()), _Metrics()
+
+    async def run() -> None:
+        async with _executor(conn, metrics).scope(
+            SimpleNamespace(), None, call_timeout=None, deadline=None, commit=True
+        ):
+            pass
+
+    task = asyncio.create_task(run())
+    while "invalidate" not in conn.calls:
+        await asyncio.sleep(0)
+    task.cancel()  # a second interruption, while the shielded invalidate is running
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert metrics.counts.get(m.COMMIT_UNKNOWN) == 1  # counted before the invalidate, so never lost
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_sync_auto_commit_interrupted_propagates_unchanged_and_invalidates(
+    interrupt: type[BaseException],
+) -> None:
+    from dbkit._sync.executor import ResilientExecutor as SyncExecutor
+
+    conn, metrics = _SyncConn(interrupt()), _Metrics()
+    ex = SyncExecutor.__new__(SyncExecutor)
+    entry = SimpleNamespace(
+        key=SimpleNamespace(database="db", shard_id=None, role="write"), engine=None
+    )
+
+    @contextlib.contextmanager
+    def span(*_: Any, **__: Any) -> Any:
+        yield SimpleNamespace(set_attribute=lambda *a: None)
+
+    ex.entry = lambda _: (entry, None)  # type: ignore[method-assign]
+    ex.acquire = lambda *_: conn  # type: ignore[method-assign]
+    ex.query_meta = lambda q: ("q", "execute", None)  # type: ignore[method-assign]
+    ex.labels = lambda *a: {}  # type: ignore[method-assign]
+    ex.is_postgres = lambda e: False  # type: ignore[method-assign]
+    ex._tracer = SimpleNamespace(span=span)  # type: ignore[attr-defined]
+    ex._metrics = metrics  # type: ignore[attr-defined]
+    ex._config = SimpleNamespace(  # type: ignore[attr-defined]
+        defaults=SimpleNamespace(
+            query_timeout_seconds=1.0, observability=SimpleNamespace(slow_query_ms=1e9)
+        )
+    )
+    with (
+        pytest.raises(interrupt),
+        ex.scope(SimpleNamespace(), None, call_timeout=None, deadline=None, commit=True),
+    ):
+        pass
+    assert "rollback" not in conn.calls and "invalidate" in conn.calls
+    assert metrics.counts.get(m.COMMIT_UNKNOWN) == 1
