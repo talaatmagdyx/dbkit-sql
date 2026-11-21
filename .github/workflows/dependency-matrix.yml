@@ -38,7 +38,7 @@ jobs:
       DBKIT_TEST_DSN: postgresql+psycopg://dbkit:dbkit@localhost:5432/dbkit
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v6
       - run: uv python install 3.12
       - run: uv sync --extra dev
       - name: Pin SQLAlchemy to matrix version
