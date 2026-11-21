@@ -40,7 +40,7 @@ from ._core.routing import (
 )
 from ._sync.database import Database
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "AsyncDatabase",
