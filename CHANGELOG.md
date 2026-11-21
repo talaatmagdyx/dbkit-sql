@@ -6,15 +6,32 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-21
+
+### Security
+- **DSN passwords are redacted in every form** wherever a URL or driver message can reach a log, trace, metric
+  or error (§30): URL userinfo (including passwords containing `/`, `+`, `=` or spaces, the password-only
+  `scheme://:pw@host` form and percent-encoded passwords), URL query parameters whose decoded key contains
+  `password` (`?password=`, `?sslpassword=`, `?db_password=`, nested `?next=/x?password=`), libpq keyword DSNs
+  and other `password`-like keys (`password=`, `PGPASSWORD=`, `db_password: x`, quoted or not), and mapping or
+  JSON forms (`'password': 'x'`, `"password":"x"`). A value after a recognised key is redacted to its natural
+  end, so an unusual or very long value is hidden whole. `TargetConfig.__repr__` (and so the reprs of
+  `DatabaseConfig` and `DbkitConfig`) uses the same redaction; the URL itself is unchanged for the engine.
+- **Redaction time is bounded** on long, attacker-influenced error text: search patterns are bounded and anchored,
+  and `sanitize_message` cuts messages to 8192 characters before redacting (a DSN password cut before its `@` is
+  redacted to the end), so no text past the cut reaches the output.
+- **Engine-creation errors keep no driver error in their chain.** The error is raised outside the `except` block,
+  so a driver message that echoes the URL is not kept as `__context__` (sync and async).
+
 ### Fixed
-- **Config reprs no longer print DSN passwords.** `TargetConfig.__repr__` redacts its URL, so `repr()` of a
-  `TargetConfig`, `DatabaseConfig` or `DbkitConfig` (which reach logs, tracebacks and error reporters) never shows
-  the password; the URL itself is unchanged for the engine (§30).
-- **Engine-creation errors are sanitized.** A driver error that echoes the URL is passed through `sanitize_message`
-  and no longer chained, sync and async (§30).
-- **Cancellation during COMMIT propagates.** An `asyncio.CancelledError` raised while COMMIT is in flight is
-  re-raised unchanged instead of being reclassified as a generic error after a pointless rollback; it is counted as
-  `commit_unknown`, because the COMMIT may have landed (§15).
+- **An interruption during COMMIT is never swallowed or reclassified** (task cancellation, `KeyboardInterrupt`,
+  `SystemExit`; §15): no rollback is attempted, the connection is invalidated inside a shield and never reused,
+  the outcome is counted as `commit_unknown`, and the interruption propagates unchanged. This covers explicit
+  transactions and the auto-commit scope behind `execute`, `execute_many`, `connection()` and best-effort bulk,
+  sync and async. A further cancellation or a failure while invalidating is added as a note on the original
+  exception (saying whether the invalidate finished); a `KeyboardInterrupt` or `SystemExit` raised while
+  invalidating outranks the original and propagates.
+- A password-less URL followed by an unrelated `@` later in a message stays readable (`host:port/db`).
 
 ## [0.3.0] - 2026-07-21
 
