@@ -37,7 +37,7 @@ from ..observability import logging as obslog
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink
 from ..observability.tracing import Tracer
-from ._compat import API_LABEL
+from ._compat import API_LABEL, invalidate_after_interrupted_commit
 from .connection import ConnectionScope
 from .engine import EngineRegistry, EngineEntry
 from .resilience import ConcurrencyLimiter, run_with_retries
@@ -286,6 +286,13 @@ class ResilientExecutor:
                     try:
                         conn.commit()
                     except BaseException as commit_exc:
+                        if not isinstance(commit_exc, Exception):
+                            # Interrupted during COMMIT (cancellation, KeyboardInterrupt,
+                            # SystemExit): the outcome is unknown. No rollback; the connection is
+                            # invalidated, never reused; the interruption propagates unchanged.
+                            self._metrics.incr(m.COMMIT_UNKNOWN, labels=labels)  # counted first
+                            invalidate_after_interrupted_commit(conn, commit_exc)
+                            raise commit_exc
                         # Mirror _TransactionManager._commit(): a failure during COMMIT
                         # may mean the write committed anyway (§15) — never silently swallow
                         # that ambiguity, and never leave the exception unclassified either

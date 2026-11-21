@@ -25,7 +25,7 @@ from .._core.errors import (
 from ..observability import logging as obslog
 from ..observability import metrics as m
 from ..observability.metrics import MetricsSink, NoopMetrics
-from ._compat import is_cancellation, shield_from_cancellation
+from ._compat import invalidate_after_interrupted_commit, is_cancellation, shield_from_cancellation
 from .connection import AsyncConnectionScope, apply_statement_timeout_sql
 
 
@@ -226,8 +226,10 @@ class _AsyncTransactionManager:
             except DatabaseCommitUnknownError:
                 outcome = "commit_unknown"
                 raise
-            except BaseException:
-                outcome = "rollback"  # _commit() already attempted an internal rollback
+            except BaseException as commit_exc:
+                # Interrupted during COMMIT: the outcome is not known. Otherwise _commit() already
+                # attempted an internal rollback.
+                outcome = "rollback" if isinstance(commit_exc, Exception) else "commit_unknown"
                 raise
             return False
         finally:
@@ -255,6 +257,13 @@ class _AsyncTransactionManager:
         try:
             await self._trans.commit()
         except BaseException as commit_exc:
+            if not isinstance(commit_exc, Exception):
+                # Interrupted (task cancellation, KeyboardInterrupt, SystemExit) during COMMIT:
+                # it may or may not have landed. A rollback would prove nothing; the connection's
+                # state is unknown, so it is invalidated (never reused), then the interruption
+                # propagates unchanged.
+                await invalidate_after_interrupted_commit(self._conn, commit_exc)
+                raise commit_exc
             # A failure during COMMIT may mean the transaction committed anyway (§15).
             if is_connection_error(commit_exc):
                 raise DatabaseCommitUnknownError(

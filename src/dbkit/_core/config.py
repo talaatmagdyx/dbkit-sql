@@ -215,6 +215,13 @@ class TargetConfig:
     weight: int = 1
     pool: PoolConfig | None = None  # falls back to defaults.pool
 
+    def __repr__(self) -> str:
+        # The URL may carry a password; reprs reach logs, tracebacks and reporters (§30).
+        return (
+            f"TargetConfig(url={redact_dsn(self.url)!r}, name={self.name!r}, "
+            f"required={self.required!r}, weight={self.weight!r}, pool={self.pool!r})"
+        )
+
     def resolved_pool(self, defaults: Defaults) -> PoolConfig:
         """This target's own pool config, or ``defaults.pool`` if it doesn't override one."""
         return self.pool or defaults.pool
