@@ -109,3 +109,29 @@ async def shield_from_cancellation(coro: Coroutine[Any, Any, T]) -> T:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.shield(task)
         raise
+
+
+async def invalidate_after_interrupted_commit(conn: Any, original: BaseException) -> None:
+    """Drop a connection whose COMMIT was interrupted (outcome unknown) from the pool, shielded.
+
+    A failure or a further cancellation while invalidating is noted on ``original`` (which the
+    caller re-raises), saying whether the invalidate finished, so it is never silently lost. (A
+    KeyboardInterrupt or SystemExit raised inside the shielded invalidate escapes through the event
+    loop, as asyncio does for those, rather than reaching this coroutine.)"""
+    finished = False
+
+    async def _invalidate() -> None:
+        nonlocal finished
+        await conn.invalidate()
+        finished = True
+
+    try:
+        await shield_from_cancellation(_invalidate())
+    except BaseException as second:
+        if not (isinstance(second, Exception) or is_cancellation(second)):
+            raise
+        state = "finished" if finished else "did not finish"
+        original.add_note(
+            f"dbkit: {type(second).__name__} while invalidating the connection; "
+            f"the invalidate {state}"
+        )
